@@ -1,0 +1,475 @@
+#!/bin/sh
+
+BASE=/etc/voucher
+CONFIG=$BASE/config
+VOUCHERS=$BASE/vouchers
+SESSIONS=$BASE/sessions
+USES=$BASE/uses
+NFT=/etc/nftables.d/90-voucher.nft
+VOUCHER_NET=10.18.20.0/24
+VOUCHER_IP=10.18.20.1
+VOUCHER_PORT=2080
+# Dynamically find voucher interface by matching SSID from UCI
+VOUCHER_SSID="$(uci -q get wireless.voucher5.ssid || echo "Voucher WiFi")"
+VOUCHER_IF="$(iw dev | awk -v ssid="$VOUCHER_SSID" '
+	/Interface/ { iface=$2 }
+	/ssid/ {
+		sub(/^[ \t]*ssid /, "")
+		if ($0 == ssid) { print iface; exit }
+	}
+')"
+[ -n "$VOUCHER_IF" ] || VOUCHER_IF=phy0-ap1
+UPLINK_IF=br-lan
+VOUCHER_LIMIT_DOWN_MBPS=0
+VOUCHER_LIMIT_UP_MBPS=0
+
+mkdir -p "$BASE"
+touch "$VOUCHERS" "$SESSIONS" "$USES"
+[ -r "$CONFIG" ] && . "$CONFIG"
+
+now() {
+	date +%s
+}
+
+clean_code() {
+	echo "$1" | tr 'a-z' 'A-Z' | tr -cd 'A-Z0-9'
+}
+
+client_ip() {
+	echo "${REMOTE_ADDR:-}" | awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }'
+}
+
+client_mac() {
+	ip="$1"
+	awk -v ip="$ip" '$1 == ip { print tolower($4); exit }' /proc/net/arp
+}
+
+disconnect_mac() {
+	mac="$(echo "$1" | tr 'A-F' 'a-f')"
+	[ -n "$mac" ] && [ "$mac" != "unknown" ] || return 0
+	iw dev "$VOUCHER_IF" station del "$mac" 2>/dev/null || true
+}
+
+write_nft() {
+cat > "$NFT" <<EOF
+set voucher_allowed4 {
+	type ipv4_addr
+	flags timeout
+}
+
+chain voucher_gate_forward {
+	type filter hook forward priority -5; policy accept;
+	iifname "$VOUCHER_IF" ip saddr @voucher_allowed4 accept
+	iifname "$VOUCHER_IF" reject
+}
+
+chain voucher_gate_dstnat {
+	type nat hook prerouting priority dstnat - 10; policy accept;
+	iifname "$VOUCHER_IF" udp dport 53 redirect to :53
+	iifname "$VOUCHER_IF" tcp dport 53 redirect to :53
+	iifname "$VOUCHER_IF" ip saddr != @voucher_allowed4 tcp dport 80 dnat ip to $VOUCHER_IP:$VOUCHER_PORT
+}
+
+chain voucher_gate_srcnat {
+	type nat hook postrouting priority srcnat - 10; policy accept;
+	ip saddr $VOUCHER_NET oifname "$UPLINK_IF" masquerade
+}
+EOF
+}
+
+load_sessions() {
+	[ -f "$SESSIONS" ] || return 0
+	t="$(now)"
+	tmp="$SESSIONS.tmp"
+	: > "$tmp"
+	while IFS='|' read -r code ip mac exp; do
+		[ -n "$code" ] || continue
+		if ! [ "$exp" -gt "$t" ] 2>/dev/null; then
+			nft delete element inet fw4 voucher_allowed4 "{ $ip }" 2>/dev/null || true
+			disconnect_mac "$mac"
+			logger -t voucher "expired code=$code ip=$ip mac=$mac"
+			continue
+		fi
+		left=$((exp - t))
+		echo "$code|$ip|$mac|$exp" >> "$tmp"
+		nft add element inet fw4 voucher_allowed4 "{ $ip timeout ${left}s }" 2>/dev/null || true
+	done < "$SESSIONS"
+	mv "$tmp" "$SESSIONS"
+}
+
+mark_active_sessions_used() {
+	[ -s "$SESSIONS" ] || return 0
+	while IFS='|' read -r code ip mac exp; do
+		[ -n "$code" ] || continue
+		line="$(voucher_line "$code")"
+		status="$(echo "$line" | awk -F'|' '{ print $5 }')"
+		[ "$status" = "used" ] || mark_voucher_used "$code" "$ip" "$mac"
+	done < "$SESSIONS"
+}
+
+migrate_used_vouchers() {
+	[ -s "$VOUCHERS" ] || return 0
+	while IFS='|' read -r code mins maxdev note status used_ip used_mac used_at rest; do
+		[ -n "$code" ] || continue
+		[ "$status" = "used" ] || continue
+		[ -n "$used_ip$used_mac" ] || continue
+		record_voucher_use "$code" "$used_ip" "${used_mac:-unknown}" "${used_at:-$(now)}"
+	done < "$VOUCHERS"
+}
+
+flush_allowlist() {
+	nft flush set inet fw4 voucher_allowed4 2>/dev/null || true
+}
+
+clear_speed_limit() {
+	tc qdisc del dev "$VOUCHER_IF" root 2>/dev/null || true
+	tc qdisc del dev "$VOUCHER_IF" ingress 2>/dev/null || true
+}
+
+apply_speed_limit() {
+	down="${VOUCHER_LIMIT_DOWN_MBPS:-0}"
+	up="${VOUCHER_LIMIT_UP_MBPS:-0}"
+	[ "$down" -gt 0 ] 2>/dev/null || down=0
+	[ "$up" -gt 0 ] 2>/dev/null || up=0
+
+	clear_speed_limit
+	command -v tc >/dev/null 2>&1 || {
+		logger -t voucher "speed_limit skipped: tc not installed"
+		return 0
+	}
+	[ "$down" -gt 0 ] || [ "$up" -gt 0 ] || return 0
+
+	if [ "$down" -gt 0 ]; then
+		rate=$((down * 1024))
+		[ "$rate" -ge 64 ] || rate=64
+		tc qdisc add dev "$VOUCHER_IF" root tbf rate "${rate}kbit" burst 32kbit latency 400ms 2>/dev/null || logger -t voucher "download limit failed"
+	fi
+	if [ "$up" -gt 0 ]; then
+		rate=$((up * 1024))
+		[ "$rate" -ge 64 ] || rate=64
+		tc qdisc add dev "$VOUCHER_IF" ingress 2>/dev/null || true
+		tc filter add dev "$VOUCHER_IF" parent ffff: protocol ip prio 1 u32 match ip src "$VOUCHER_NET" police rate "${rate}kbit" burst 32k drop flowid :1 2>/dev/null || logger -t voucher "upload limit failed"
+	fi
+}
+
+write_runtime_config() {
+	tmp="$CONFIG.tmp"
+	cat > "$tmp" <<EOF
+VOUCHER_NET=$VOUCHER_NET
+VOUCHER_IP=$VOUCHER_IP
+VOUCHER_PORT=$VOUCHER_PORT
+VOUCHER_IF=$VOUCHER_IF
+UPLINK_IF=$UPLINK_IF
+VOUCHER_LIMIT_DOWN_MBPS=$VOUCHER_LIMIT_DOWN_MBPS
+VOUCHER_LIMIT_UP_MBPS=$VOUCHER_LIMIT_UP_MBPS
+EOF
+	mv "$tmp" "$CONFIG"
+	chmod 600 "$CONFIG"
+}
+
+set_speed_limit() {
+	down="$1"
+	up="$2"
+	[ "$down" -ge 0 ] 2>/dev/null || down=0
+	[ "$up" -ge 0 ] 2>/dev/null || up=0
+	VOUCHER_LIMIT_DOWN_MBPS="$down"
+	VOUCHER_LIMIT_UP_MBPS="$up"
+	write_runtime_config
+	apply_speed_limit
+	echo "Limit voucher: download ${VOUCHER_LIMIT_DOWN_MBPS} Mbps upload ${VOUCHER_LIMIT_UP_MBPS} Mbps"
+}
+
+speed_status() {
+	echo "limit_down_mbps=$VOUCHER_LIMIT_DOWN_MBPS"
+	echo "limit_up_mbps=$VOUCHER_LIMIT_UP_MBPS"
+	command -v tc >/dev/null 2>&1 || { echo "tc=missing"; return 0; }
+	echo "--- qdisc $VOUCHER_IF"
+	tc qdisc show dev "$VOUCHER_IF" 2>/dev/null || true
+	echo "--- ingress $VOUCHER_IF"
+	tc filter show dev "$VOUCHER_IF" parent ffff: 2>/dev/null || true
+}
+
+init_rules() {
+	migrate_used_vouchers
+	write_nft
+	fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1
+	flush_allowlist
+	load_sessions
+	mark_active_sessions_used
+	apply_speed_limit
+}
+
+cleanup() {
+	load_sessions
+}
+
+voucher_line() {
+	code="$1"
+	awk -F'|' -v c="$code" '$1 == c { print; exit }' "$VOUCHERS"
+}
+
+active_session_for_client() {
+	code="$1"
+	ip="$2"
+	mac="$3"
+	t="$(now)"
+	awk -F'|' -v c="$code" -v ip="$ip" -v mac="$mac" -v t="$t" '
+		$1 == c && $4 > t && ($2 == ip || (mac != "unknown" && $3 == mac)) { found=1 }
+		END { exit found ? 0 : 1 }
+	' "$SESSIONS"
+}
+
+voucher_device_seen() {
+	code="$1"
+	ip="$2"
+	mac="$3"
+	if [ -n "$mac" ] && [ "$mac" != "unknown" ]; then
+		awk -F'|' -v c="$code" -v mac="$mac" '$1 == c && $3 == mac { found=1 } END { exit found ? 0 : 1 }' "$USES"
+	else
+		awk -F'|' -v c="$code" -v ip="$ip" '$1 == c && $2 == ip { found=1 } END { exit found ? 0 : 1 }' "$USES"
+	fi
+}
+
+voucher_use_count() {
+	code="$1"
+	awk -F'|' -v c="$code" '$1 == c { n++ } END { print n + 0 }' "$USES"
+}
+
+record_voucher_use() {
+	code="$1"
+	ip="$2"
+	mac="$3"
+	t="${4:-$(now)}"
+	[ -n "$code" ] || return 0
+	[ -n "$ip" ] || ip=unknown
+	[ -n "$mac" ] || mac=unknown
+	if voucher_device_seen "$code" "$ip" "$mac"; then
+		return 0
+	fi
+	echo "$code|$ip|$mac|$t" >> "$USES"
+	chmod 600 "$USES"
+}
+
+mark_voucher_used() {
+	code="$1"
+	ip="$2"
+	mac="$3"
+	t="$(now)"
+	record_voucher_use "$code" "$ip" "$mac" "$t"
+	tmp="$VOUCHERS.tmp"
+	awk -F'|' -v c="$code" -v ip="$ip" -v mac="$mac" -v t="$t" '
+		$1 == c {
+			note=$4
+			status=$5
+			if (status == "") status="new"
+			print $1 "|" $2 "|" $3 "|" note "|used|" ip "|" mac "|" t
+			next
+		}
+		{ print }
+	' "$VOUCHERS" > "$tmp"
+	mv "$tmp" "$VOUCHERS"
+	chmod 600 "$VOUCHERS"
+}
+
+consume_voucher_if_full() {
+	code="$1"
+	maxdev="$2"
+	[ -n "$code" ] || return 0
+	[ "$maxdev" -gt 0 ] 2>/dev/null || maxdev=1
+	count="$(voucher_use_count "$code")"
+	[ "$count" -ge "$maxdev" ] 2>/dev/null || return 0
+	tmp="$VOUCHERS.tmp"
+	awk -F'|' -v c="$code" '$1 != c' "$VOUCHERS" > "$tmp"
+	mv "$tmp" "$VOUCHERS"
+	tmp="$USES.tmp"
+	awk -F'|' -v c="$code" '$1 != c' "$USES" > "$tmp"
+	mv "$tmp" "$USES"
+	chmod 600 "$VOUCHERS" "$USES"
+	logger -t voucher "consumed code=$code maxdev=$maxdev"
+}
+
+active_count() {
+	code="$1"
+	t="$(now)"
+	awk -F'|' -v c="$code" -v t="$t" '$1 == c && $4 > t { n++ } END { print n + 0 }' "$SESSIONS"
+}
+
+login() {
+	migrate_used_vouchers
+	code="$(clean_code "$1")"
+	ip="$(client_ip)"
+	[ -n "$code" ] || { echo "Kode voucher kosong"; return 1; }
+	[ -n "$ip" ] || { echo "IP client tidak valid"; return 1; }
+
+	line="$(voucher_line "$code")"
+	[ -n "$line" ] || { echo "Kode voucher tidak dikenal"; return 1; }
+
+	mins="$(echo "$line" | awk -F'|' '{ print $2 }')"
+	maxdev="$(echo "$line" | awk -F'|' '{ print $3 }')"
+	[ "$mins" -gt 0 ] 2>/dev/null || { echo "Durasi voucher tidak valid"; return 1; }
+	[ "$maxdev" -gt 0 ] 2>/dev/null || maxdev=1
+
+	mac="$(client_mac "$ip")"
+	[ -n "$mac" ] || mac=unknown
+
+	if voucher_device_seen "$code" "$ip" "$mac"; then
+		active_session_for_client "$code" "$ip" "$mac" || {
+			echo "Voucher sudah digunakan"
+			return 1
+		}
+	else
+		count="$(voucher_use_count "$code")"
+		[ "$count" -lt "$maxdev" ] || {
+			echo "Voucher sudah mencapai batas $maxdev perangkat"
+			return 1
+		}
+	fi
+
+	if ! awk -F'|' -v c="$code" -v ip="$ip" -v mac="$mac" '$1 == c && ($2 == ip || (mac != "unknown" && $3 == mac)) { found=1 } END { exit found ? 0 : 1 }' "$SESSIONS"; then
+		count="$(active_count "$code")"
+		[ "$count" -lt "$maxdev" ] || { echo "Voucher sudah mencapai batas perangkat aktif"; return 1; }
+	fi
+
+	if voucher_device_seen "$code" "$ip" "$mac" && ! active_session_for_client "$code" "$ip" "$mac"; then
+		echo "Voucher sudah digunakan"
+		return 1
+	fi
+
+	exp=$(( $(now) + mins * 60 ))
+	tmp="$SESSIONS.tmp"
+	awk -F'|' -v c="$code" -v ip="$ip" -v mac="$mac" '!(($1 == c) && ($2 == ip || (mac != "unknown" && $3 == mac)))' "$SESSIONS" > "$tmp"
+	echo "$code|$ip|$mac|$exp" >> "$tmp"
+	mv "$tmp" "$SESSIONS"
+	mark_voucher_used "$code" "$ip" "$mac"
+	consume_voucher_if_full "$code" "$maxdev"
+	nft add element inet fw4 voucher_allowed4 "{ $ip timeout $((mins * 60))s }" 2>/dev/null || init_rules
+	logger -t voucher "login code=$code ip=$ip mac=$mac minutes=$mins"
+	echo "OK|$mins"
+}
+
+status() {
+	cleanup
+	t="$(now)"
+	awk -F'|' -v t="$t" '{ printf "%s %s %s %d menit tersisa\n", $1, $2, $3, int(($4-t)/60) }' "$SESSIONS"
+}
+
+list_vouchers() {
+	migrate_used_vouchers
+	while IFS='|' read -r code mins maxdev note status used_ip used_mac used_at; do
+		[ -n "$code" ] || continue
+		[ -n "$status" ] || status="new"
+		count="$(voucher_use_count "$code")"
+		printf "%s|%s|%s|%s|%s|%s|%s|%s|%s\n" "$code" "$mins" "$maxdev" "$note" "$status" "$used_ip" "$used_mac" "$used_at" "$count"
+	done < "$VOUCHERS"
+}
+
+list_sessions() {
+	cleanup
+	t="$(now)"
+	awk -F'|' -v t="$t" '{ printf "%s|%s|%s|%s|%d\n", $1, $2, $3, $4, int(($4-t)/60) }' "$SESSIONS"
+}
+
+add_voucher() {
+	code="$(clean_code "$1")"
+	mins="$2"
+	maxdev="${3:-1}"
+	note="$4"
+	[ -n "$code" ] || { echo "Kode kosong"; return 1; }
+	[ "${#code}" -eq 5 ] 2>/dev/null || { echo "Kode harus 5 karakter alfanumerik"; return 1; }
+	[ "$mins" -gt 0 ] 2>/dev/null || { echo "Durasi menit tidak valid"; return 1; }
+	[ "$maxdev" -gt 0 ] 2>/dev/null || maxdev=1
+	tmp="$VOUCHERS.tmp"
+	awk -F'|' -v c="$code" '$1 != c' "$VOUCHERS" > "$tmp"
+	echo "$code|$mins|$maxdev|$note|new|||" >> "$tmp"
+	mv "$tmp" "$VOUCHERS"
+	chmod 600 "$VOUCHERS"
+	echo "Voucher $code dibuat: $mins menit, max $maxdev perangkat"
+}
+
+random_code() {
+	len="${1:-5}"
+	[ "$len" -gt 0 ] 2>/dev/null || len=5
+	tr -dc 'A-Z0-9' < /dev/urandom | dd bs=1 count="$len" 2>/dev/null
+	echo
+}
+
+generate_vouchers() {
+	count="${1:-10}"
+	mins="${2:-1440}"
+	maxdev="${3:-1}"
+	note="${4:-generated}"
+	[ "$count" -gt 0 ] 2>/dev/null || count=10
+	[ "$mins" -gt 0 ] 2>/dev/null || mins=1440
+	[ "$maxdev" -gt 0 ] 2>/dev/null || maxdev=1
+	i=0
+	while [ "$i" -lt "$count" ]; do
+		code="$(random_code 5)"
+		if [ -z "$(voucher_line "$code")" ]; then
+			add_voucher "$code" "$mins" "$maxdev" "$note"
+			i=$((i + 1))
+		fi
+	done
+}
+
+del_voucher() {
+	code="$(clean_code "$1")"
+	[ -n "$code" ] || { echo "Kode kosong"; return 1; }
+	tmp="$VOUCHERS.tmp"
+	awk -F'|' -v c="$code" '$1 != c' "$VOUCHERS" > "$tmp"
+	mv "$tmp" "$VOUCHERS"
+	tmp="$SESSIONS.tmp"
+	awk -F'|' -v c="$code" '$1 != c' "$SESSIONS" > "$tmp"
+	mv "$tmp" "$SESSIONS"
+	tmp="$USES.tmp"
+	awk -F'|' -v c="$code" '$1 != c' "$USES" > "$tmp"
+	mv "$tmp" "$USES"
+	init_rules
+	echo "Voucher $code dihapus"
+}
+
+kill_session() {
+	code="$(clean_code "$1")"
+	ip="$2"
+	mac="$(echo "$3" | tr 'A-F' 'a-f')"
+	[ -n "$code$ip$mac" ] || { echo "Butuh kode, IP, atau MAC"; return 1; }
+	if [ -n "$code" ] && { [ -z "$ip" ] || [ -z "$mac" ]; }; then
+		line="$(awk -F'|' -v c="$code" '$1 == c { print; exit }' "$SESSIONS")"
+		[ -n "$ip" ] || ip="$(echo "$line" | awk -F'|' '{ print $2 }')"
+		[ -n "$mac" ] || mac="$(echo "$line" | awk -F'|' '{ print $3 }')"
+	fi
+	tmp="$SESSIONS.tmp"
+	awk -F'|' -v c="$code" -v ip="$ip" -v mac="$mac" '
+		(c != "" && $1 == c) || (ip != "" && $2 == ip) || (mac != "" && $3 == mac) { next }
+		{ print }
+	' "$SESSIONS" > "$tmp"
+	mv "$tmp" "$SESSIONS"
+	[ -n "$ip" ] && nft delete element inet fw4 voucher_allowed4 "{ $ip }" 2>/dev/null || true
+	disconnect_mac "$mac"
+	echo "Sesi dihapus"
+}
+
+kill_all_sessions() {
+	: > "$SESSIONS"
+	init_rules
+	iw dev "$VOUCHER_IF" station dump 2>/dev/null | awk '/^Station / { print $2 }' | while read -r mac; do
+		iw dev "$VOUCHER_IF" station del "$mac" 2>/dev/null || true
+	done
+	echo "Semua sesi dihapus"
+}
+
+case "$1" in
+	init) init_rules ;;
+	cleanup) cleanup ;;
+	login) login "$2" ;;
+	status) status ;;
+	vouchers) list_vouchers ;;
+	sessions) list_sessions ;;
+	add) shift; add_voucher "$@" ;;
+	generate) shift; generate_vouchers "$@" ;;
+	del) del_voucher "$2" ;;
+	kill) kill_session "$2" "$3" "$4" ;;
+	kill-all) kill_all_sessions ;;
+	speed) set_speed_limit "$2" "$3" ;;
+	speed-status) speed_status ;;
+	*) echo "Usage: voucherctl init|cleanup|login CODE|status|vouchers|sessions|add CODE MINUTES [MAX_DEVICES] [NOTE]|generate [COUNT] [MINUTES] [MAX_DEVICES] [NOTE]|del CODE|kill [CODE] [IP] [MAC]|kill-all|speed DOWN_MBPS UP_MBPS|speed-status"; exit 1 ;;
+esac

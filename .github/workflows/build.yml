@@ -1,0 +1,27 @@
+name: Build OpenWrt IPK
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Make build script executable
+      run: chmod +x build_ipk.sh
+
+    - name: Run build script
+      run: ./build_ipk.sh
+
+    - name: Upload IPK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: luci-app-voucher-ipk
+        path: "*.ipk"

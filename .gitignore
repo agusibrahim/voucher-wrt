@@ -1,0 +1,9 @@
+# Ignored directories
+backups/
+config-snapshots/
+
+# Build artifacts
+*.ipk
+
+# OS generated files
+.DS_Store

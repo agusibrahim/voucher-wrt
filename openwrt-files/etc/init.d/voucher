@@ -1,0 +1,27 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+PID=/var/run/voucher-uhttpd.pid
+CONFIG=/etc/voucher/config
+
+VOUCHER_IP=10.18.20.1
+VOUCHER_PORT=2080
+[ -r "$CONFIG" ] && . "$CONFIG"
+
+start() {
+	/usr/sbin/voucherctl init
+	start-stop-daemon -K -q -p "$PID" 2>/dev/null || true
+	start-stop-daemon -S -q -b -m -p "$PID" -x /usr/sbin/uhttpd -- \
+		-f -p "$VOUCHER_IP:$VOUCHER_PORT" -h /www/voucher -x /cgi-bin \
+		-E /cgi-bin/voucher -t 30 -T 30 -n 2 -N 10
+}
+
+stop() {
+	start-stop-daemon -K -q -p "$PID" 2>/dev/null || true
+	rm -f "$PID"
+}
+
+reload() {
+	stop
+	start
+}

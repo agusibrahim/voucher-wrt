@@ -1,0 +1,32 @@
+{
+	"luci-app-voucher": {
+		"description": "Grant access for Voucher WiFi application",
+		"read": {
+			"file": {
+				"/etc/voucher/vouchers": [ "read" ],
+				"/etc/voucher/sessions": [ "read" ],
+				"/etc/voucher/config": [ "read" ],
+				"/etc/freewifi/sessions": [ "read" ],
+				"/etc/freewifi/config": [ "read" ]
+			},
+			"uci": [ "wireless", "network", "dhcp" ]
+		},
+		"write": {
+			"file": {
+				"/etc/voucher/vouchers": [ "write" ],
+				"/etc/voucher/sessions": [ "write" ],
+				"/etc/voucher/config": [ "write" ],
+				"/etc/freewifi/sessions": [ "write" ],
+				"/etc/freewifi/config": [ "write" ],
+				"/usr/sbin/voucherctl *": [ "exec" ],
+				"/usr/sbin/freewifi *": [ "exec" ],
+				"/etc/init.d/voucher *": [ "exec" ],
+				"/etc/init.d/freewifi *": [ "exec" ],
+				"/etc/init.d/uhttpd *": [ "exec" ],
+				"/sbin/uci *": [ "exec" ],
+				"/sbin/wifi *": [ "exec" ]
+			},
+			"uci": [ "wireless", "network", "dhcp" ]
+		}
+	}
+}

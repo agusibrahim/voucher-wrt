@@ -1,0 +1,297 @@
+#!/bin/sh
+
+BASE=/etc/voucher
+TOKEN_FILE=$BASE/admin_token
+CSRF_FILE=$BASE/admin_csrf
+
+read_post() {
+	len="${CONTENT_LENGTH:-0}"
+	[ "$len" -gt 0 ] 2>/dev/null || return 0
+	dd bs=1 count="$len" 2>/dev/null
+}
+
+urldecode() {
+	v="$(sed 's/+/ /g; s/%/\\x/g')"
+	printf '%b' "$v"
+}
+
+field() {
+	key="$1"
+	tr '&' '\n' | awk -F= -v k="$key" '$1 == k { print $2; exit }' | urldecode
+}
+
+html_escape() {
+	sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'
+}
+
+clean_num() {
+	echo "$1" | tr -cd '0-9'
+}
+
+clean_code() {
+	echo "$1" | tr 'a-z' 'A-Z' | tr -cd 'A-Z0-9'
+}
+
+load_config() {
+	[ -r "$BASE/config" ] && . "$BASE/config"
+}
+
+duration_mins() {
+	days="$(clean_num "$(printf '%s' "$params" | field days)")"
+	hours="$(clean_num "$(printf '%s' "$params" | field hours)")"
+	mins="$(clean_num "$(printf '%s' "$params" | field mins)")"
+	days="${days:-0}"
+	hours="${hours:-0}"
+	mins="${mins:-0}"
+	total=$((days * 1440 + hours * 60 + mins))
+	[ "$total" -gt 0 ] 2>/dev/null || total=1440
+	echo "$total"
+}
+
+format_duration() {
+	total="${1:-0}"
+	[ "$total" -gt 0 ] 2>/dev/null || total=0
+	days=$((total / 1440))
+	rem=$((total % 1440))
+	hours=$((rem / 60))
+	mins=$((rem % 60))
+	out=""
+	[ "$days" -gt 0 ] && out="${out}${days} hari "
+	[ "$hours" -gt 0 ] && out="${out}${hours} jam "
+	[ "$mins" -gt 0 ] && out="${out}${mins} menit"
+	[ -n "$out" ] || out="0 menit"
+	echo "$out"
+}
+
+token="$(printf '%s' "$QUERY_STRING" | field token)"
+saved="$(cat "$TOKEN_FILE" 2>/dev/null)"
+csrf_saved="$(cat "$CSRF_FILE" 2>/dev/null)"
+[ -n "$csrf_saved" ] || csrf_saved="$saved"
+msg=""
+err=""
+params="$QUERY_STRING"
+did_action=0
+if [ "$REQUEST_METHOD" = "POST" ]; then
+	params="$(read_post)"
+	token="$(printf '%s' "$params" | field token)"
+fi
+
+if [ -z "$saved" ] || [ "$token" != "$saved" ]; then
+	cat <<'EOF'
+Content-Type: text/html; charset=utf-8
+Cache-Control: no-store
+
+<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Voucher Admin</title><style>body{font-family:system-ui,sans-serif;margin:32px;background:#f6f7f9;color:#111827}main{max-width:520px;background:white;border:1px solid #d8dee8;border-radius:8px;padding:20px}input,button{font:inherit;padding:10px;border-radius:6px;border:1px solid #b8c0cc}button{background:#0f766e;color:white;border:0;font-weight:700}</style></head><body><main><h1>Voucher Admin</h1><p>Masukkan token admin.</p><form method="get"><input name="token" autofocus autocomplete="off"><button>Masuk</button></form></main></body></html>
+EOF
+	exit 0
+fi
+
+if [ "$REQUEST_METHOD" = "POST" ]; then
+	csrf="$(printf '%s' "$params" | field csrf)"
+	action="$(printf '%s' "$params" | field action)"
+	if [ -z "$csrf_saved" ] || [ "$csrf" != "$csrf_saved" ]; then
+		err="Token form tidak valid"
+	else
+		case "$action" in
+			add)
+				code="$(clean_code "$(printf '%s' "$params" | field code)")"
+				mins="$(duration_mins)"
+				maxdev="$(clean_num "$(printf '%s' "$params" | field maxdev)")"
+				note="$(printf '%s' "$params" | field note | tr -cd 'A-Za-z0-9 ._-')"
+				out="$(/usr/sbin/voucherctl add "$code" "${mins:-1440}" "${maxdev:-1}" "$note" 2>&1)" && msg="$out" || err="$out"
+				did_action=1
+				;;
+			generate)
+				count="$(clean_num "$(printf '%s' "$params" | field count)")"
+				mins="$(duration_mins)"
+				maxdev="$(clean_num "$(printf '%s' "$params" | field maxdev)")"
+				note="$(printf '%s' "$params" | field note | tr -cd 'A-Za-z0-9 ._-')"
+				out="$(/usr/sbin/voucherctl generate "${count:-10}" "${mins:-1440}" "${maxdev:-1}" "$note" 2>&1)" && msg="$out" || err="$out"
+				did_action=1
+				;;
+			del)
+				code="$(clean_code "$(printf '%s' "$params" | field code)")"
+				out="$(/usr/sbin/voucherctl del "$code" 2>&1)" && msg="$out" || err="$out"
+				did_action=1
+				;;
+			kill)
+				code="$(clean_code "$(printf '%s' "$params" | field code)")"
+				ip="$(printf '%s' "$params" | field ip | tr -cd '0-9.')"
+				mac="$(printf '%s' "$params" | field mac | tr -cd 'A-Fa-f0-9:')"
+				out="$(/usr/sbin/voucherctl kill "$code" "$ip" "$mac" 2>&1)" && msg="$out" || err="$out"
+				did_action=1
+				;;
+			killall)
+				out="$(/usr/sbin/voucherctl kill-all 2>&1)" && msg="$out" || err="$out"
+				did_action=1
+				;;
+			freekill)
+				ip="$(printf '%s' "$params" | field ip | tr -cd '0-9.')"
+				mac="$(printf '%s' "$params" | field mac | tr -cd 'A-Fa-f0-9:')"
+				out="$(/usr/sbin/freewifi kill "$ip" "$mac" 2>&1)" && msg="$out" || err="$out"
+				did_action=1
+				;;
+			speed)
+				percent="$(clean_num "$(printf '%s' "$params" | field percent)")"
+				down_mbps="$(clean_num "$(printf '%s' "$params" | field down_mbps)")"
+				up_mbps="$(clean_num "$(printf '%s' "$params" | field up_mbps)")"
+				down_kbit=$(( ${down_mbps:-0} * 1000 ))
+				up_kbit=$(( ${up_mbps:-0} * 1000 ))
+				out="$(/usr/sbin/voucherctl speed "${percent:-100}" "$down_kbit" "$up_kbit" 2>&1)" && msg="$out" || err="$out"
+				did_action=1
+				;;
+		esac
+	fi
+fi
+
+if [ "$REQUEST_METHOD" = "POST" ] && [ "$did_action" = "1" ] && [ -z "$err" ]; then
+	printf 'Status: 303 See Other\r\n'
+	printf 'Location: /cgi-bin/voucher-admin?token=%s\r\n' "$token"
+	printf 'Cache-Control: no-store\r\n\r\n'
+	exit 0
+fi
+
+cat <<EOF
+Content-Type: text/html; charset=utf-8
+Cache-Control: no-store
+
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Voucher Admin</title>
+<style>
+body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f4f6f8;color:#111827}
+main{max-width:1100px;margin:0 auto;padding:24px}
+h1{margin:0 0 16px;font-size:28px}
+section{background:white;border:1px solid #d9e0ea;border-radius:8px;margin:14px 0;padding:16px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:9px;border-bottom:1px solid #e5e9f0;text-align:left}
+th{font-size:12px;text-transform:uppercase;color:#4b5563}
+input,button{font:inherit;border-radius:6px;border:1px solid #aeb8c7;padding:9px}
+button{background:#0f766e;color:white;border:0;font-weight:800;cursor:pointer}
+.danger{background:#b91c1c}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;align-items:end}
+.ok{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;padding:10px;border-radius:6px;white-space:pre-wrap}
+.err{background:#fff1f2;color:#9f1239;border:1px solid #fecdd3;padding:10px;border-radius:6px;white-space:pre-wrap}
+.muted{color:#6b7280}
+</style>
+</head>
+<body><main>
+<h1>Voucher Admin</h1>
+EOF
+
+[ -n "$msg" ] && printf '<div class="ok">%s</div>\n' "$(printf '%s' "$msg" | html_escape)"
+[ -n "$err" ] && printf '<div class="err">%s</div>\n' "$(printf '%s' "$err" | html_escape)"
+
+load_config
+speed_percent="${VOUCHER_SPEED_PERCENT:-100}"
+down_mbps=$(( ${VOUCHER_BASE_DOWN_KBIT:-0} / 1000 ))
+up_mbps=$(( ${VOUCHER_BASE_UP_KBIT:-0} / 1000 ))
+
+cat <<EOF
+<section>
+<h2>Batas Kecepatan Voucher</h2>
+<form class="grid" method="post" action="/cgi-bin/voucher-admin">
+<input type="hidden" name="token" value="$(printf '%s' "$token" | html_escape)">
+<input type="hidden" name="csrf" value="$(printf '%s' "$csrf_saved" | html_escape)">
+<input type="hidden" name="action" value="speed">
+<label>Persen voucher<br><input name="percent" value="$(printf '%s' "$speed_percent" | html_escape)" inputmode="numeric"></label>
+<label>Download penuh Mbps<br><input name="down_mbps" value="$(printf '%s' "$down_mbps" | html_escape)" inputmode="numeric"></label>
+<label>Upload penuh Mbps<br><input name="up_mbps" value="$(printf '%s' "$up_mbps" | html_escape)" inputmode="numeric"></label>
+<button>Simpan Limit</button>
+</form>
+<p class="muted">Contoh: internet 50/10 Mbps dan voucher 30% berarti jaringan voucher dibatasi sekitar 15/3 Mbps total.</p>
+<pre>
+$(/usr/sbin/voucherctl speed-status 2>/dev/null | html_escape)
+</pre>
+</section>
+<section>
+<h2>Generate Voucher</h2>
+<form class="grid" method="post" action="/cgi-bin/voucher-admin">
+<input type="hidden" name="token" value="$(printf '%s' "$token" | html_escape)">
+<input type="hidden" name="csrf" value="$(printf '%s' "$csrf_saved" | html_escape)">
+<input type="hidden" name="action" value="generate">
+<label>Jumlah<br><input name="count" value="10" inputmode="numeric"></label>
+<label>Hari<br><input name="days" value="1" inputmode="numeric"></label>
+<label>Jam<br><input name="hours" value="0" inputmode="numeric"></label>
+<label>Menit<br><input name="mins" value="0" inputmode="numeric"></label>
+<label>Max device<br><input name="maxdev" value="1" inputmode="numeric"></label>
+<label>Catatan<br><input name="note" value="1 hari"></label>
+<button>Generate</button>
+</form>
+</section>
+<section>
+<h2>Tambah Voucher Manual</h2>
+<form class="grid" method="post" action="/cgi-bin/voucher-admin">
+<input type="hidden" name="token" value="$(printf '%s' "$token" | html_escape)">
+<input type="hidden" name="csrf" value="$(printf '%s' "$csrf_saved" | html_escape)">
+<input type="hidden" name="action" value="add">
+<label>Kode 5 alfanumerik<br><input name="code" maxlength="5" autocomplete="off"></label>
+<label>Hari<br><input name="days" value="1" inputmode="numeric"></label>
+<label>Jam<br><input name="hours" value="0" inputmode="numeric"></label>
+<label>Menit<br><input name="mins" value="0" inputmode="numeric"></label>
+<label>Max device<br><input name="maxdev" value="1" inputmode="numeric"></label>
+<label>Catatan<br><input name="note"></label>
+<button>Tambah</button>
+</form>
+</section>
+<section>
+<h2>Sesi Aktif</h2>
+<form method="post" action="/cgi-bin/voucher-admin">
+<input type="hidden" name="token" value="$(printf '%s' "$token" | html_escape)">
+<input type="hidden" name="csrf" value="$(printf '%s' "$csrf_saved" | html_escape)">
+<input type="hidden" name="action" value="killall">
+<button class="danger">Kill Semua Sesi</button>
+</form>
+<table><tr><th>Kode</th><th>IP</th><th>MAC</th><th>Sisa</th><th>Aksi</th></tr>
+EOF
+
+/usr/sbin/voucherctl sessions | while IFS='|' read -r code ip mac exp left; do
+	[ -n "$code" ] || continue
+	left_label="$(format_duration "$left") ($left menit)"
+	printf '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method="post" action="/cgi-bin/voucher-admin"><input type="hidden" name="token" value="%s"><input type="hidden" name="csrf" value="%s"><input type="hidden" name="action" value="kill"><input type="hidden" name="code" value="%s"><input type="hidden" name="ip" value="%s"><input type="hidden" name="mac" value="%s"><button class="danger">Kill</button></form></td></tr>\n' \
+		"$(printf '%s' "$code" | html_escape)" "$(printf '%s' "$ip" | html_escape)" "$(printf '%s' "$mac" | html_escape)" "$(printf '%s' "$left_label" | html_escape)" "$(printf '%s' "$token" | html_escape)" "$(printf '%s' "$csrf_saved" | html_escape)" "$(printf '%s' "$code" | html_escape)" "$(printf '%s' "$ip" | html_escape)" "$(printf '%s' "$mac" | html_escape)"
+done
+
+cat <<EOF
+</table>
+</section>
+<section>
+<h2>Pengguna Internet Gratis</h2>
+<table><tr><th>IP</th><th>MAC</th><th>Nama</th><th>Telepon</th><th>Sisa</th><th>Aksi</th></tr>
+EOF
+
+if [ -x /usr/sbin/freewifi ]; then
+	/usr/sbin/freewifi sessions | while IFS='|' read -r ip mac name phone ts left; do
+		[ -n "$ip" ] || continue
+		left_label="$(format_duration "$left") ($left menit)"
+		printf '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method="post" action="/cgi-bin/voucher-admin"><input type="hidden" name="token" value="%s"><input type="hidden" name="csrf" value="%s"><input type="hidden" name="action" value="freekill"><input type="hidden" name="ip" value="%s"><input type="hidden" name="mac" value="%s"><button class="danger">Kill</button></form></td></tr>\n' \
+			"$(printf '%s' "$ip" | html_escape)" "$(printf '%s' "$mac" | html_escape)" "$(printf '%s' "$name" | html_escape)" "$(printf '%s' "$phone" | html_escape)" "$(printf '%s' "$left_label" | html_escape)" "$(printf '%s' "$token" | html_escape)" "$(printf '%s' "$csrf_saved" | html_escape)" "$(printf '%s' "$ip" | html_escape)" "$(printf '%s' "$mac" | html_escape)"
+	done
+fi
+
+cat <<EOF
+</table>
+</section>
+<section>
+<h2>Daftar Voucher</h2>
+<table><tr><th>Kode</th><th>Durasi</th><th>Max device</th><th>Status</th><th>Catatan</th><th>Aksi</th></tr>
+EOF
+
+/usr/sbin/voucherctl vouchers | while IFS='|' read -r code mins maxdev note status used_ip used_mac used_at used_count; do
+	[ -n "$code" ] || continue
+	duration_label="$(format_duration "$mins") ($mins menit)"
+	status_label="$status"
+	[ "$status" = "used" ] && status_label="used ${used_count:-1}/$maxdev $used_ip $used_mac"
+	printf '<tr><td><strong>%s</strong></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method="post" action="/cgi-bin/voucher-admin"><input type="hidden" name="token" value="%s"><input type="hidden" name="csrf" value="%s"><input type="hidden" name="action" value="del"><input type="hidden" name="code" value="%s"><button class="danger">Hapus</button></form></td></tr>\n' \
+		"$(printf '%s' "$code" | html_escape)" "$(printf '%s' "$duration_label" | html_escape)" "$(printf '%s' "$maxdev" | html_escape)" "$(printf '%s' "$status_label" | html_escape)" "$(printf '%s' "$note" | html_escape)" "$(printf '%s' "$token" | html_escape)" "$(printf '%s' "$csrf_saved" | html_escape)" "$(printf '%s' "$code" | html_escape)"
+done
+
+cat <<'EOF'
+</table>
+<p class="muted">Admin hanya tersedia dari jaringan admin router. Simpan token admin dengan aman.</p>
+</section>
+</main></body></html>
+EOF

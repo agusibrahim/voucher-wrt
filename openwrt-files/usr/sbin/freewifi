@@ -1,0 +1,225 @@
+#!/bin/sh
+
+BASE=/etc/freewifi
+CONFIG=$BASE/config
+SESSIONS=$BASE/sessions
+NFT=/etc/nftables.d/91-freewifi.nft
+FREE_NET=10.18.30.0/24
+FREE_IP=10.18.30.1
+FREE_PORT=2081
+# Dynamically find freewifi interface by matching SSID from UCI
+FREE_SSID="$(uci -q get wireless.freewifi.ssid || echo "KAYLA INTERNET GRATIS")"
+FREE_IF="$(iw dev | awk -v ssid="$FREE_SSID" '
+	/Interface/ { iface=$2 }
+	/ssid/ {
+		sub(/^[ \t]*ssid /, "")
+		if ($0 == ssid) { print iface; exit }
+	}
+')"
+[ -n "$FREE_IF" ] || FREE_IF=phy0-ap2
+UPLINK_IF=br-lan
+FREE_SESSION_MINUTES=1440
+FREE_LIMIT_DOWN_MBPS=0
+FREE_LIMIT_UP_MBPS=0
+
+mkdir -p "$BASE"
+touch "$SESSIONS"
+[ -r "$CONFIG" ] && . "$CONFIG"
+
+now() {
+	date +%s
+}
+
+clean_name() {
+	echo "$1" | tr -cd 'A-Za-z0-9 ._-'
+}
+
+clean_phone() {
+	echo "$1" | tr -cd '0-9+'
+}
+
+client_ip() {
+	echo "${REMOTE_ADDR:-}" | awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }'
+}
+
+client_mac() {
+	ip="$1"
+	awk -v ip="$ip" '$1 == ip { print tolower($4); exit }' /proc/net/arp
+}
+
+disconnect_mac() {
+	mac="$(echo "$1" | tr 'A-F' 'a-f')"
+	[ -n "$mac" ] && [ "$mac" != "unknown" ] || return 0
+	iw dev "$FREE_IF" station del "$mac" 2>/dev/null || true
+}
+
+write_nft() {
+cat > "$NFT" <<EOF
+set freewifi_allowed4 {
+	type ipv4_addr
+	flags timeout
+}
+
+chain freewifi_gate_forward {
+	type filter hook forward priority -4; policy accept;
+	iifname "$FREE_IF" ip saddr @freewifi_allowed4 accept
+	iifname "$FREE_IF" reject
+}
+
+chain freewifi_gate_dstnat {
+	type nat hook prerouting priority dstnat - 9; policy accept;
+	iifname "$FREE_IF" udp dport 53 redirect to :53
+	iifname "$FREE_IF" tcp dport 53 redirect to :53
+	iifname "$FREE_IF" ip saddr != @freewifi_allowed4 tcp dport 80 dnat ip to $FREE_IP:$FREE_PORT
+}
+
+chain freewifi_gate_srcnat {
+	type nat hook postrouting priority srcnat - 9; policy accept;
+	ip saddr $FREE_NET oifname "$UPLINK_IF" masquerade
+}
+EOF
+}
+
+clear_speed_limit() {
+	tc qdisc del dev "$FREE_IF" root 2>/dev/null || true
+	tc qdisc del dev "$FREE_IF" ingress 2>/dev/null || true
+}
+
+apply_speed_limit() {
+	down="${FREE_LIMIT_DOWN_MBPS:-0}"
+	up="${FREE_LIMIT_UP_MBPS:-0}"
+	[ "$down" -gt 0 ] 2>/dev/null || down=0
+	[ "$up" -gt 0 ] 2>/dev/null || up=0
+
+	clear_speed_limit
+	command -v tc >/dev/null 2>&1 || return 0
+	[ "$down" -gt 0 ] || [ "$up" -gt 0 ] || return 0
+
+	if [ "$down" -gt 0 ] 2>/dev/null; then
+		rate=$((down * 1024))
+		[ "$rate" -ge 64 ] || rate=64
+		tc qdisc add dev "$FREE_IF" root tbf rate "${rate}kbit" burst 32kbit latency 400ms 2>/dev/null || true
+	fi
+	if [ "$up" -gt 0 ] 2>/dev/null; then
+		rate=$((up * 1024))
+		[ "$rate" -ge 64 ] || rate=64
+		tc qdisc add dev "$FREE_IF" ingress 2>/dev/null || true
+		tc filter add dev "$FREE_IF" parent ffff: protocol ip prio 1 u32 match ip src "$FREE_NET" police rate "${rate}kbit" burst 32k drop flowid :1 2>/dev/null || true
+	fi
+}
+
+write_runtime_config() {
+	tmp="$CONFIG.tmp"
+	cat > "$tmp" <<EOF
+FREE_NET=$FREE_NET
+FREE_IP=$FREE_IP
+FREE_PORT=$FREE_PORT
+FREE_IF=$FREE_IF
+UPLINK_IF=$UPLINK_IF
+FREE_SESSION_MINUTES=$FREE_SESSION_MINUTES
+FREE_LIMIT_DOWN_MBPS=$FREE_LIMIT_DOWN_MBPS
+FREE_LIMIT_UP_MBPS=$FREE_LIMIT_UP_MBPS
+EOF
+	mv "$tmp" "$CONFIG"
+	chmod 600 "$CONFIG"
+}
+
+set_speed_limit() {
+	down="$1"
+	up="$2"
+	[ "$down" -ge 0 ] 2>/dev/null || down=0
+	[ "$up" -ge 0 ] 2>/dev/null || up=0
+	FREE_LIMIT_DOWN_MBPS="$down"
+	FREE_LIMIT_UP_MBPS="$up"
+	write_runtime_config
+	apply_speed_limit
+	echo "Limit freewifi: download ${FREE_LIMIT_DOWN_MBPS} Mbps upload ${FREE_LIMIT_UP_MBPS} Mbps"
+}
+
+load_sessions() {
+	t="$(now)"
+	tmp="$SESSIONS.tmp"
+	: > "$tmp"
+	while IFS='|' read -r ip mac name phone ts exp; do
+		[ -n "$ip" ] || continue
+		if ! [ "$exp" -gt "$t" ] 2>/dev/null; then
+			nft delete element inet fw4 freewifi_allowed4 "{ $ip }" 2>/dev/null || true
+			disconnect_mac "$mac"
+			continue
+		fi
+		left=$((exp - t))
+		echo "$ip|$mac|$name|$phone|$ts|$exp" >> "$tmp"
+		nft add element inet fw4 freewifi_allowed4 "{ $ip timeout ${left}s }" 2>/dev/null || true
+	done < "$SESSIONS"
+	mv "$tmp" "$SESSIONS"
+}
+
+init_rules() {
+	write_nft
+	fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1
+	nft flush set inet fw4 freewifi_allowed4 2>/dev/null || true
+	load_sessions
+	apply_speed_limit
+}
+
+login() {
+	name="$(clean_name "$1")"
+	phone="$(clean_phone "$2")"
+	ip="$(client_ip)"
+	[ -n "$name" ] || { echo "Nama wajib diisi"; return 1; }
+	[ -n "$phone" ] || { echo "Nomor telpon wajib diisi"; return 1; }
+	[ -n "$ip" ] || { echo "IP client tidak valid"; return 1; }
+	mac="$(client_mac "$ip")"
+	[ -n "$mac" ] || mac=unknown
+	ts="$(now)"
+	exp=$((ts + FREE_SESSION_MINUTES * 60))
+	tmp="$SESSIONS.tmp"
+	awk -F'|' -v ip="$ip" -v mac="$mac" '!(($1 == ip) || ($2 == mac && mac != "unknown"))' "$SESSIONS" > "$tmp"
+	echo "$ip|$mac|$name|$phone|$ts|$exp" >> "$tmp"
+	mv "$tmp" "$SESSIONS"
+	chmod 600 "$SESSIONS"
+	nft add element inet fw4 freewifi_allowed4 "{ $ip timeout $((FREE_SESSION_MINUTES * 60))s }" 2>/dev/null || init_rules
+	logger -t freewifi "login ip=$ip mac=$mac name=$name phone=$phone"
+	echo "OK|$FREE_SESSION_MINUTES"
+}
+
+sessions() {
+	load_sessions
+	t="$(now)"
+	awk -F'|' -v t="$t" '{ printf "%s|%s|%s|%s|%s|%d\n", $1, $2, $3, $4, $5, int(($6-t)/60) }' "$SESSIONS"
+}
+
+kill_session() {
+	ip="$1"
+	mac="$(echo "$2" | tr 'A-F' 'a-f')"
+	tmp="$SESSIONS.tmp"
+	awk -F'|' -v ip="$ip" -v mac="$mac" '!(($1 == ip && ip != "") || ($2 == mac && mac != ""))' "$SESSIONS" > "$tmp"
+	mv "$tmp" "$SESSIONS"
+	[ -n "$ip" ] && nft delete element inet fw4 freewifi_allowed4 "{ $ip }" 2>/dev/null || true
+	disconnect_mac "$mac"
+	echo "Sesi free wifi dihapus"
+}
+
+status() {
+	echo "ssid=KAYLA INTERNET GRATIS"
+	echo "if=$FREE_IF"
+	echo "net=$FREE_NET"
+	echo "portal=$FREE_IP:$FREE_PORT"
+	echo "limit_down_mbps=$FREE_LIMIT_DOWN_MBPS"
+	echo "limit_up_mbps=$FREE_LIMIT_UP_MBPS"
+	command -v tc >/dev/null 2>&1 && {
+		tc qdisc show dev "$FREE_IF" 2>/dev/null || true
+		tc filter show dev "$FREE_IF" parent ffff: 2>/dev/null || true
+	}
+}
+
+case "$1" in
+	init) init_rules ;;
+	cleanup) load_sessions ;;
+	login) login "$2" "$3" ;;
+	sessions) sessions ;;
+	kill) kill_session "$2" "$3" ;;
+	speed) set_speed_limit "$2" "$3" ;;
+	status) status ;;
+	*) echo "Usage: freewifi init|cleanup|login NAME PHONE|sessions|kill IP MAC|speed DOWN_MBPS UP_MBPS|status"; exit 1 ;;
+esac

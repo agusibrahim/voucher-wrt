@@ -1,0 +1,22 @@
+set voucher_allowed4 {
+	type ipv4_addr
+	flags timeout
+}
+
+chain voucher_gate_forward {
+	type filter hook forward priority -5; policy accept;
+	iifname "phy1-ap0" ip saddr @voucher_allowed4 accept
+	iifname "phy1-ap0" reject
+}
+
+chain voucher_gate_dstnat {
+	type nat hook prerouting priority dstnat - 10; policy accept;
+	iifname "phy1-ap0" udp dport 53 redirect to :53
+	iifname "phy1-ap0" tcp dport 53 redirect to :53
+	iifname "phy1-ap0" ip saddr != @voucher_allowed4 tcp dport 80 dnat ip to 10.18.20.1:2080
+}
+
+chain voucher_gate_srcnat {
+	type nat hook postrouting priority srcnat - 10; policy accept;
+	ip saddr 10.18.20.0/24 oifname "br-lan" masquerade
+}
