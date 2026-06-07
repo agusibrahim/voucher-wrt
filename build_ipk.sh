@@ -4,6 +4,13 @@ set -e
 # Disable Mac metadata files (._ files) in tar
 export COPYFILE_DISABLE=1
 
+# Detect OS to use correct tar flags (GNU tar on Linux vs BSD tar on macOS)
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  TAR_CMD="tar --uname root --gname root --format=ustar --no-xattrs --no-mac-metadata"
+else
+  TAR_CMD="tar --owner=root --group=root --format=ustar"
+fi
+
 # Config
 PKG_NAME="luci-app-voucher"
 PKG_VERSION="1.0.0"
@@ -75,12 +82,12 @@ chmod +x "$BUILD_DIR/control/postrm"
 
 # Build control.tar.gz
 cd "$BUILD_DIR/control"
-tar --uname root --gname root --format=ustar --no-xattrs --no-mac-metadata -czf ../control.tar.gz .
+$TAR_CMD -czf ../control.tar.gz .
 cd ../../
 
 # Build data.tar.gz
 cd "$BUILD_DIR/data"
-tar --uname root --gname root --format=ustar --no-xattrs --no-mac-metadata -czf ../data.tar.gz .
+$TAR_CMD -czf ../data.tar.gz .
 cd ../../
 
 # Create debian-binary
@@ -88,7 +95,7 @@ echo "2.0" > "$BUILD_DIR/debian-binary"
 
 # Archive into .ipk file (using tar.gz packaging for maximum portability on macOS/OpenWrt)
 cd "$BUILD_DIR"
-tar --uname root --gname root --format=ustar --no-xattrs --no-mac-metadata -czf "../${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${PKG_ARCH}.ipk" control.tar.gz data.tar.gz debian-binary
+$TAR_CMD -czf "../${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${PKG_ARCH}.ipk" control.tar.gz data.tar.gz debian-binary
 cd ../
 
 # Clean up
