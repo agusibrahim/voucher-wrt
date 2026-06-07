@@ -2,7 +2,7 @@
 
 A lightweight, modern voucher-based captive portal management system for OpenWrt/ImmortalWrt, integrated directly into the LuCI web interface.
 
-![Voucher Management Dashboard](assets/preview.png)
+![luci-app-voucher](assets/preview.png)
 
 Built using stock OpenWrt components:
 - **LuCI** (JavaScript-based view for administration)
