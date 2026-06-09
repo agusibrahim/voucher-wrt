@@ -117,7 +117,21 @@ return view.extend({
 			'Voucher %s deleted successfully.': 'Voucher %s berhasil dihapus.',
 			'Disconnect Free WiFi user %s?': 'Putuskan koneksi Free WiFi %s?',
 			'Client %s disconnected.': 'Koneksi %s berhasil diputuskan.',
-			'Search:': 'Cari:'
+			'Search:': 'Cari:',
+			'Portal Customizer': 'Kustomisasi Portal',
+			'Voucher WiFi Portal Design': 'Desain Portal Voucher WiFi',
+			'Customize the texts, colors, and styles of the Voucher WiFi landing page.': 'Kustomisasi teks, warna, dan gaya tampilan halaman login Voucher WiFi.',
+			'Portal Title': 'Judul Portal',
+			'Portal Description': 'Deskripsi Portal',
+			'Footer / Instructions Note': 'Catatan Kaki / Instruksi',
+			'Login Button Text': 'Teks Tombol Login',
+			'Background Color': 'Warna Latar Belakang',
+			'Background Gradient (CSS)': 'Gradasi Latar Belakang (CSS)',
+			'Font Color': 'Warna Font',
+			'Accent / Button Color': 'Warna Aksen / Tombol',
+			'Custom CSS (Override)': 'Kustom CSS (Override)',
+			'Free WiFi Portal Design': 'Desain Portal Free WiFi',
+			'Customize the texts, colors, and styles of the Free WiFi landing page.': 'Kustomisasi teks, warna, dan gaya tampilan halaman login Free WiFi.'
 		};
 
 		let _ = function(str) {
@@ -261,7 +275,8 @@ return view.extend({
 			E('li', { class: 'cbi-tab', 'data-tab': 'status', click: switchTab }, E('a', {}, _('Status & Info'))),
 			E('li', { class: 'cbi-tab cbi-tab-disabled', 'data-tab': 'vouchers', click: switchTab }, E('a', {}, _('Manage Vouchers'))),
 			E('li', { class: 'cbi-tab cbi-tab-disabled', 'data-tab': 'sessions', click: switchTab }, E('a', {}, _('Active Sessions'))),
-			E('li', { class: 'cbi-tab cbi-tab-disabled', 'data-tab': 'settings', click: switchTab }, E('a', {}, _('Network & Speed Settings')))
+			E('li', { class: 'cbi-tab cbi-tab-disabled', 'data-tab': 'settings', click: switchTab }, E('a', {}, _('Network & Speed Settings'))),
+			E('li', { class: 'cbi-tab cbi-tab-disabled', 'data-tab': 'portal', click: switchTab }, E('a', {}, _('Portal Customizer')))
 		]);
 
 		container.appendChild(tabmenu);
@@ -955,10 +970,254 @@ return view.extend({
 			])
 		]);
 
+		// ------------------ TAB 5: PORTAL CUSTOMIZER ------------------
+		let tabPortal = E('div', { id: 'tab-portal', class: 'voucher-tab-content', style: 'display:none; margin-top:15px;' }, [
+			E('div', { class: 'cbi-section' }, [
+				E('h3', {}, _('Voucher WiFi Portal Design')),
+				E('div', { class: 'cbi-section-node' }, [
+					E('div', { class: 'cbi-section-descr' }, _('Customize the texts, colors, and styles of the Voucher WiFi landing page.')),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Portal Title')),
+						E('div', { class: 'cbi-value-field' }, E('input', {
+							type: 'text',
+							id: 'portal-voucher-title',
+							class: 'cbi-input-text',
+							value: voucherCfg.VOUCHER_TITLE || 'WiFi Voucher Murah'
+						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Portal Description')),
+						E('div', { class: 'cbi-value-field' }, E('textarea', {
+							id: 'portal-voucher-desc',
+							class: 'cbi-input-textarea',
+							rows: 3,
+							style: 'width:100%;'
+						}, [ voucherCfg.VOUCHER_DESC || '' ]))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Footer / Instructions Note')),
+						E('div', { class: 'cbi-value-field' }, E('textarea', {
+							id: 'portal-voucher-footer',
+							class: 'cbi-input-textarea',
+							rows: 2,
+							style: 'width:100%;'
+						}, [ voucherCfg.VOUCHER_FOOTER || '' ]))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Login Button Text')),
+						E('div', { class: 'cbi-value-field' }, E('input', {
+							type: 'text',
+							id: 'portal-voucher-button',
+							class: 'cbi-input-text',
+							value: voucherCfg.VOUCHER_BUTTON_TEXT || 'Masuk'
+						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Background Color')),
+						E('div', { class: 'cbi-value-field' }, E('input', {
+							type: 'text',
+							id: 'portal-voucher-bg-color',
+							class: 'cbi-input-text',
+							placeholder: '#f5f7fb',
+							value: voucherCfg.VOUCHER_BG_COLOR || '#f5f7fb'
+						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Background Gradient (CSS)')),
+						E('div', { class: 'cbi-value-field' }, E('input', {
+							type: 'text',
+							id: 'portal-voucher-bg-gradient',
+							class: 'cbi-input-text',
+							placeholder: 'linear-gradient(135deg, #f5f7fb 0%, #e2e8f0 100%)',
+							value: voucherCfg.VOUCHER_BG_GRADIENT || ''
+						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Font Color')),
+						E('div', { class: 'cbi-value-field' }, E('input', {
+							type: 'text',
+							id: 'portal-voucher-font-color',
+							class: 'cbi-input-text',
+							placeholder: '#111827',
+							value: voucherCfg.VOUCHER_FONT_COLOR || '#111827'
+						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Accent / Button Color')),
+						E('div', { class: 'cbi-value-field' }, E('input', {
+							type: 'text',
+							id: 'portal-voucher-accent-color',
+							class: 'cbi-input-text',
+							placeholder: '#0f766e',
+							value: voucherCfg.VOUCHER_ACCENT_COLOR || '#0f766e'
+						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Custom CSS (Override)')),
+						E('div', { class: 'cbi-value-field' }, E('textarea', {
+							id: 'portal-voucher-css',
+							class: 'cbi-input-textarea',
+							rows: 6,
+							style: 'width:100%; font-family:monospace; font-size:12px;'
+						}, [ (voucherCfg.VOUCHER_CUSTOM_CSS || '').replace(/__NL__/g, '\n') ]))
+					])
+				])
+			]),
+			E('div', { class: 'cbi-section' }, [
+				E('h3', {}, _('Free WiFi Portal Design')),
+				E('div', { class: 'cbi-section-node' }, [
+					E('div', { class: 'cbi-section-descr' }, _('Customize the texts, colors, and styles of the Free WiFi landing page.')),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Portal Title')),
+						E('div', { class: 'cbi-value-field' }, E('input', {
+							type: 'text',
+							id: 'portal-free-title',
+							class: 'cbi-input-text',
+							value: freeCfg.FREE_TITLE || 'KAYLA INTERNET GRATIS!'
+						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Portal Description')),
+						E('div', { class: 'cbi-value-field' }, E('textarea', {
+							id: 'portal-free-desc',
+							class: 'cbi-input-textarea',
+							rows: 3,
+							style: 'width:100%;'
+						}, [ freeCfg.FREE_DESC || '' ]))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Login Button Text')),
+						E('div', { class: 'cbi-value-field' }, E('input', {
+							type: 'text',
+							id: 'portal-free-button',
+							class: 'cbi-input-text',
+							value: freeCfg.FREE_BUTTON_TEXT || 'Konek Internet'
+						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Background Color')),
+						E('div', { class: 'cbi-value-field' }, E('input', {
+							type: 'text',
+							id: 'portal-free-bg-color',
+							class: 'cbi-input-text',
+							placeholder: '#f5f7fb',
+							value: freeCfg.FREE_BG_COLOR || '#f5f7fb'
+						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Background Gradient (CSS)')),
+						E('div', { class: 'cbi-value-field' }, E('input', {
+							type: 'text',
+							id: 'portal-free-bg-gradient',
+							class: 'cbi-input-text',
+							placeholder: 'linear-gradient(135deg, #f5f7fb 0%, #e2e8f0 100%)',
+							value: freeCfg.FREE_BG_GRADIENT || ''
+						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Font Color')),
+						E('div', { class: 'cbi-value-field' }, E('input', {
+							type: 'text',
+							id: 'portal-free-font-color',
+							class: 'cbi-input-text',
+							placeholder: '#111827',
+							value: freeCfg.FREE_FONT_COLOR || '#111827'
+						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Accent / Button Color')),
+						E('div', { class: 'cbi-value-field' }, E('input', {
+							type: 'text',
+							id: 'portal-free-accent-color',
+							class: 'cbi-input-text',
+							placeholder: '#0f766e',
+							value: freeCfg.FREE_ACCENT_COLOR || '#0f766e'
+						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Custom CSS (Override)')),
+						E('div', { class: 'cbi-value-field' }, E('textarea', {
+							id: 'portal-free-css',
+							class: 'cbi-input-textarea',
+							rows: 6,
+							style: 'width:100%; font-family:monospace; font-size:12px;'
+						}, [ (freeCfg.FREE_CUSTOM_CSS || '').replace(/__NL__/g, '\n') ]))
+					])
+				])
+			]),
+			E('div', { class: 'cbi-value' }, [
+				E('button', {
+					class: 'cbi-button cbi-button-save important',
+					click: function() {
+						let vTitle = document.getElementById('portal-voucher-title').value;
+						let vDesc = document.getElementById('portal-voucher-desc').value;
+						let vFooter = document.getElementById('portal-voucher-footer').value;
+						let vButton = document.getElementById('portal-voucher-button').value;
+						let vBg = document.getElementById('portal-voucher-bg-color').value;
+						let vGrad = document.getElementById('portal-voucher-bg-gradient').value;
+						let vFont = document.getElementById('portal-voucher-font-color').value;
+						let vAccent = document.getElementById('portal-voucher-accent-color').value;
+						let vCss = document.getElementById('portal-voucher-css').value.replace(/\n/g, '__NL__');
+
+						let fTitle = document.getElementById('portal-free-title').value;
+						let fDesc = document.getElementById('portal-free-desc').value;
+						let fButton = document.getElementById('portal-free-button').value;
+						let fBg = document.getElementById('portal-free-bg-color').value;
+						let fGrad = document.getElementById('portal-free-bg-gradient').value;
+						let fFont = document.getElementById('portal-free-font-color').value;
+						let fAccent = document.getElementById('portal-free-accent-color').value;
+						let fCss = document.getElementById('portal-free-css').value.replace(/\n/g, '__NL__');
+
+						ui.showModal(_('Saving Settings...'), [E('p', { class: 'spinning' }, _('Saving to wireless UCI and writing controller configuration files.'))]);
+
+						voucherCfg.VOUCHER_TITLE = vTitle;
+						voucherCfg.VOUCHER_DESC = vDesc;
+						voucherCfg.VOUCHER_FOOTER = vFooter;
+						voucherCfg.VOUCHER_BUTTON_TEXT = vButton;
+						voucherCfg.VOUCHER_BG_COLOR = vBg;
+						voucherCfg.VOUCHER_BG_GRADIENT = vGrad;
+						voucherCfg.VOUCHER_FONT_COLOR = vFont;
+						voucherCfg.VOUCHER_ACCENT_COLOR = vAccent;
+						voucherCfg.VOUCHER_CUSTOM_CSS = vCss;
+
+						freeCfg.FREE_TITLE = fTitle;
+						freeCfg.FREE_DESC = fDesc;
+						freeCfg.FREE_BUTTON_TEXT = fButton;
+						freeCfg.FREE_BG_COLOR = fBg;
+						freeCfg.FREE_BG_GRADIENT = fGrad;
+						freeCfg.FREE_FONT_COLOR = fFont;
+						freeCfg.FREE_ACCENT_COLOR = fAccent;
+						freeCfg.FREE_CUSTOM_CSS = fCss;
+
+						let serialize = function(cfg) {
+							let out = '';
+							for (let k in cfg) {
+								let val = (cfg[k] || '').toString().replace(/'/g, "'\\''");
+								out += `${k}='${val}'\n`;
+							}
+							return out;
+						};
+
+						fs.write('/etc/voucher/config', serialize(voucherCfg))
+							.then(() => fs.write('/etc/freewifi/config', serialize(freeCfg)))
+							.then(() => {
+								ui.hideModal();
+								ui.addNotification(null, E('p', {}, _('Settings saved successfully!')), 'info');
+							})
+							.catch(err => {
+								ui.hideModal();
+								ui.addNotification(null, E('p', {}, _('Failed to save settings: %s').replace('%s', err.message)), 'danger');
+							});
+					}
+				}, _('Save & Apply'))
+			])
+		]);
+
 		container.appendChild(tabStatus);
 		container.appendChild(tabVouchers);
 		container.appendChild(tabSessions);
 		container.appendChild(tabSettings);
+		container.appendChild(tabPortal);
 
 		return container;
 	},

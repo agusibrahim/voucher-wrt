@@ -35,7 +35,20 @@ if [ -n "$params" ]; then
 	esac
 fi
 
-cat <<'EOF'
+CONFIG=/etc/freewifi/config
+[ -r "$CONFIG" ] && . "$CONFIG"
+
+FREE_BG_GRADIENT_STYLE=""
+if [ -n "${FREE_BG_GRADIENT:-}" ]; then
+	FREE_BG_GRADIENT_STYLE="background-image: $FREE_BG_GRADIENT;"
+fi
+
+FREE_CUSTOM_CSS_DECODED=""
+if [ -n "${FREE_CUSTOM_CSS:-}" ]; then
+	FREE_CUSTOM_CSS_DECODED="$(echo "$FREE_CUSTOM_CSS" | sed 's/__NL__/\n/g')"
+fi
+
+cat <<EOF
 Content-Type: text/html; charset=utf-8
 Cache-Control: no-store
 
@@ -44,35 +57,36 @@ Cache-Control: no-store
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>KAYLA INTERNET GRATIS</title>
+<title>${FREE_TITLE:-KAYLA INTERNET GRATIS}</title>
 <style>
-body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#111827;display:grid;min-height:100vh;place-items:center}
+body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:${FREE_BG_COLOR:-#f5f7fb};$FREE_BG_GRADIENT_STYLE color:${FREE_FONT_COLOR:-#111827};display:grid;min-height:100vh;place-items:center}
 main{width:min(440px,calc(100% - 32px));background:white;border:1px solid #d9e0ea;border-radius:8px;padding:24px;box-shadow:0 10px 24px rgba(15,23,42,.08)}
 h1{font-size:24px;margin:0 0 8px}
 p{color:#4b5563;line-height:1.45}
 label{display:block;font-size:13px;font-weight:700;margin:16px 0 8px}
 input{box-sizing:border-box;width:100%;font-size:18px;padding:12px;border:1px solid #aeb8c7;border-radius:6px}
-button{width:100%;margin-top:16px;padding:13px 14px;border:0;border-radius:6px;background:#0f766e;color:white;font-weight:800;font-size:16px}
+button{width:100%;margin-top:16px;padding:13px 14px;border:0;border-radius:6px;background:${FREE_ACCENT_COLOR:-#0f766e};color:white;font-weight:800;font-size:16px}
 .err{background:#fff1f2;border:1px solid #fecdd3;color:#9f1239;padding:10px 12px;border-radius:6px}
 .ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;padding:10px 12px;border-radius:6px}
+$FREE_CUSTOM_CSS_DECODED
 </style>
 </head>
 <body>
 <main>
-<h1>KAYLA INTERNET GRATIS</h1>
-<p>Isi nama dan nomor telpon untuk menggunakan internet gratis.</p>
+<h1>${FREE_TITLE:-KAYLA INTERNET GRATIS}</h1>
+<p>${FREE_DESC:-Isi nama dan nomor telpon untuk menggunakan internet gratis.}</p>
 EOF
 
 [ -n "$msg" ] && printf '<div class="err">%s</div>\n' "$(printf '%s' "$msg" | html_escape)"
 [ -n "$ok" ] && printf '<div class="ok">%s</div>\n' "$(printf '%s' "$ok" | html_escape)"
 
-cat <<'EOF'
+cat <<EOF
 <form method="get" action="/cgi-bin/freewifi">
 <label for="name">Nama</label>
 <input id="name" name="name" autocomplete="name" required>
 <label for="phone">Nomor telpon</label>
 <input id="phone" name="phone" inputmode="tel" autocomplete="tel" required>
-<button type="submit">Konek Internet</button>
+<button type="submit">${FREE_BUTTON_TEXT:-Konek Internet}</button>
 </form>
 </main>
 </body>

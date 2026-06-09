@@ -61,7 +61,20 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
 	esac
 fi
 
-cat <<'EOF'
+CONFIG=/etc/voucher/config
+[ -r "$CONFIG" ] && . "$CONFIG"
+
+VOUCHER_BG_GRADIENT_STYLE=""
+if [ -n "${VOUCHER_BG_GRADIENT:-}" ]; then
+	VOUCHER_BG_GRADIENT_STYLE="background-image: $VOUCHER_BG_GRADIENT;"
+fi
+
+VOUCHER_CUSTOM_CSS_DECODED=""
+if [ -n "${VOUCHER_CUSTOM_CSS:-}" ]; then
+	VOUCHER_CUSTOM_CSS_DECODED="$(echo "$VOUCHER_CUSTOM_CSS" | sed 's/__NL__/\n/g')"
+fi
+
+cat <<EOF
 Content-Type: text/html; charset=utf-8
 Cache-Control: no-store
 
@@ -70,24 +83,24 @@ Cache-Control: no-store
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Voucher WiFi</title>
+<title>${VOUCHER_TITLE:-Voucher WiFi}</title>
 <style>
-body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f7fb;color:#111827;display:grid;min-height:100vh;place-items:center}
+body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:${VOUCHER_BG_COLOR:-#f5f7fb};$VOUCHER_BG_GRADIENT_STYLE color:${VOUCHER_FONT_COLOR:-#111827};display:grid;min-height:100vh;place-items:center}
 main{width:min(420px,calc(100% - 32px));background:white;border:1px solid #d9e0ea;border-radius:8px;padding:24px;box-shadow:0 10px 24px rgba(15,23,42,.08)}
 h1{font-size:24px;margin:0 0 8px}
 p{color:#4b5563;line-height:1.45}
 label{display:block;font-size:13px;font-weight:700;margin:18px 0 8px}
 input{box-sizing:border-box;width:100%;font-size:20px;letter-spacing:2px;text-transform:uppercase;padding:13px 14px;border:1px solid #aeb8c7;border-radius:6px}
-button{width:100%;margin-top:14px;padding:13px 14px;border:0;border-radius:6px;background:#0f766e;color:white;font-weight:800;font-size:16px}
+button{width:100%;margin-top:14px;padding:13px 14px;border:0;border-radius:6px;background:${VOUCHER_ACCENT_COLOR:-#0f766e};color:white;font-weight:800;font-size:16px}
 .err{background:#fff1f2;border:1px solid #fecdd3;color:#9f1239;padding:10px 12px;border-radius:6px}
 .ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;padding:10px 12px;border-radius:6px}
+$VOUCHER_CUSTOM_CSS_DECODED
 </style>
 </head>
 <body>
 <main>
-<h1>Voucher WiFi Kayla</h1>
-<p>Masukkan kode voucher untuk mengaktifkan akses internet perangkat ini.</p>
-<p>Untuk mendapatkan voucher, hubungi Pak Agus Kav Bambu 1 No A5.</p>
+<h1>${VOUCHER_TITLE:-Voucher WiFi}</h1>
+<p>${VOUCHER_DESC:-Masukkan kode voucher untuk mengaktifkan akses internet perangkat ini.}</p>
 EOF
 
 if [ -n "$msg" ]; then
@@ -97,12 +110,13 @@ if [ -n "$ok" ]; then
 	printf '<div class="ok">%s</div>\n' "$(printf '%s' "$ok" | html_escape)"
 fi
 
-cat <<'EOF'
+cat <<EOF
 <form method="get" action="/cgi-bin/voucher">
 <label for="code">Kode voucher</label>
 <input id="code" name="code" autocomplete="one-time-code" autofocus required>
-<button type="submit">Masuk</button>
+<button type="submit">${VOUCHER_BUTTON_TEXT:-Masuk}</button>
 </form>
+<p style="font-size:12px;color:#6b7280;margin-top:20px;text-align:center;">${VOUCHER_FOOTER:-Untuk mendapatkan voucher, hubungi administrator.}</p>
 </main>
 </body>
 </html>

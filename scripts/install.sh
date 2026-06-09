@@ -24,6 +24,7 @@ TARGET="${1:-}"
 	exit 1
 }
 
+SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 FILES="$ROOT_DIR/openwrt-files"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -65,10 +66,10 @@ FREE_LIMIT_UP_MBPS="${FREE_LIMIT_UP_MBPS:-1}"
 mkdir -p "$BACKUP_DIR"
 
 echo "Checking router access..."
-ssh -o BatchMode=yes "$TARGET" 'command -v uci >/dev/null && command -v fw4 >/dev/null && command -v nft >/dev/null && command -v uhttpd >/dev/null'
+ssh $SSH_OPTS "$TARGET" 'command -v uci >/dev/null && command -v fw4 >/dev/null && command -v nft >/dev/null && command -v uhttpd >/dev/null'
 
 echo "Ensuring minimal traffic-control packages..."
-ssh -o BatchMode=yes "$TARGET" '
+ssh $SSH_OPTS "$TARGET" '
 if ! command -v tc >/dev/null 2>&1; then
 	opkg update
 	opkg install tc-tiny kmod-sched-core kmod-sched-act-police
@@ -76,13 +77,13 @@ fi
 '
 
 echo "Backing up current router config to $BACKUP_DIR ..."
-ssh -o BatchMode=yes "$TARGET" 'tar czf - /etc/config/network /etc/config/wireless /etc/config/dhcp /etc/config/firewall /etc/nftables.d /etc/voucher /etc/freewifi 2>/dev/null || true' > "$BACKUP_DIR/openwrt-pre-voucher.tar.gz"
+ssh $SSH_OPTS "$TARGET" 'tar czf - /etc/config/network /etc/config/wireless /etc/config/dhcp /etc/config/firewall /etc/nftables.d /etc/voucher /etc/freewifi 2>/dev/null || true' > "$BACKUP_DIR/openwrt-pre-voucher.tar.gz"
 
 echo "Copying voucher files..."
-ssh -o BatchMode=yes "$TARGET" 'rm -rf /tmp/voucher-install && mkdir -p /tmp/voucher-install'
-tar cf - -C "$FILES" . | ssh -o BatchMode=yes "$TARGET" 'tar xf - -C /tmp/voucher-install'
+ssh $SSH_OPTS "$TARGET" 'rm -rf /tmp/voucher-install && mkdir -p /tmp/voucher-install'
+tar cf - -C "$FILES" . | ssh $SSH_OPTS "$TARGET" 'tar xf - -C /tmp/voucher-install'
 
-ssh -o BatchMode=yes "$TARGET" "
+cat > "$ROOT_DIR/install-remote.sh" <<EOF
 set -eu
 mkdir -p /etc/voucher /etc/freewifi /www/voucher/cgi-bin /www/freewifi/cgi-bin /www/cgi-bin
 mkdir -p /etc/nftables.d
@@ -124,6 +125,15 @@ VOUCHER_IF='$VOUCHER_IF'
 UPLINK_IF='$UPLINK_IF'
 VOUCHER_LIMIT_DOWN_MBPS='$VOUCHER_LIMIT_DOWN_MBPS'
 VOUCHER_LIMIT_UP_MBPS='$VOUCHER_LIMIT_UP_MBPS'
+VOUCHER_TITLE='WiFi Voucher Murah'
+VOUCHER_DESC='Masukkan kode voucher untuk mengaktifkan akses internet perangkat ini.'
+VOUCHER_FOOTER='Hubungi admin untuk mendapatkan kode voucher wifi.'
+VOUCHER_BUTTON_TEXT='Masuk'
+VOUCHER_BG_COLOR='#f5f7fb'
+VOUCHER_BG_GRADIENT='linear-gradient(135deg, #f5f7fb 0%, #e2e8f0 100%)'
+VOUCHER_FONT_COLOR='#111827'
+VOUCHER_ACCENT_COLOR='#0f766e'
+VOUCHER_CUSTOM_CSS=''
 EOFCFG
 
 cat > /etc/freewifi/config <<'EOFFREE'
@@ -135,6 +145,14 @@ UPLINK_IF='$UPLINK_IF'
 FREE_SESSION_MINUTES='$FREE_SESSION_MINUTES'
 FREE_LIMIT_DOWN_MBPS='$FREE_LIMIT_DOWN_MBPS'
 FREE_LIMIT_UP_MBPS='$FREE_LIMIT_UP_MBPS'
+FREE_TITLE='KAYLA INTERNET GRATIS!'
+FREE_DESC='Isi nama dan nomor telpon untuk menggunakan internet gratis.'
+FREE_BUTTON_TEXT='Konek Internet'
+FREE_BG_COLOR='#f5f7fb'
+FREE_BG_GRADIENT='linear-gradient(135deg, #f5f7fb 0%, #e2e8f0 100%)'
+FREE_FONT_COLOR='#111827'
+FREE_ACCENT_COLOR='#0f766e'
+FREE_CUSTOM_CSS=''
 EOFFREE
 
 if [ ! -s /etc/voucher/vouchers ]; then
@@ -201,7 +219,6 @@ uci -q set dhcp.odhcpx.maindhcp=0 || true
 if command -v unbound >/dev/null 2>&1; then
 	uci set dhcp.@dnsmasq[0].port='0'
 fi
-
 
 uci -q delete wireless.$VOUCHER_WIFI_IFACE || true
 uci set wireless.$VOUCHER_WIFI_IFACE=wifi-iface
@@ -333,6 +350,15 @@ chmod 600 /etc/crontabs/root
 /etc/init.d/cron restart 2>/dev/null || true
 rm -rf /tmp/voucher-install
 df -h /overlay
-"
+rm -f /tmp/install-remote.sh
+EOF
+
+# Copy the generated script to the router via stdin redirect
+ssh $SSH_OPTS "$TARGET" "cat > /tmp/install-remote.sh" < "$ROOT_DIR/install-remote.sh"
+rm -f "$ROOT_DIR/install-remote.sh"
+
+# Run it asynchronously in the background on the router so it survives network/Wi-Fi reload drops!
+echo "Running installation on the router in the background..."
+ssh $SSH_OPTS "$TARGET" "sh /tmp/install-remote.sh >/tmp/install-remote.log 2>&1 &"
 
 echo "Installed. Test by joining SSID: $VOUCHER_SSID"
