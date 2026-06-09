@@ -1,0 +1,9 @@
+#!/bin/sh
+
+[ "$ACTION" = "ifup" ] || return 0
+
+if [ "$INTERFACE" = "voucher" ]; then
+	/usr/sbin/voucherctl init >/dev/null 2>&1 &
+elif [ "$INTERFACE" = "freewifi" ]; then
+	/usr/sbin/freewifi init >/dev/null 2>&1 &
+fi

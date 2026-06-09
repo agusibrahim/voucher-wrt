@@ -14,7 +14,7 @@ set -eu
 /etc/init.d/freewifi stop 2>/dev/null || true
 /etc/init.d/freewifi disable 2>/dev/null || true
 
-rm -f /etc/init.d/voucher /etc/init.d/freewifi /usr/sbin/voucherctl /usr/sbin/freewifi /etc/nftables.d/90-voucher.nft /etc/nftables.d/91-freewifi.nft
+rm -f /etc/init.d/voucher /etc/init.d/freewifi /usr/sbin/voucherctl /usr/sbin/freewifi /etc/nftables.d/90-voucher.nft /etc/nftables.d/91-freewifi.nft /etc/hotplug.d/iface/99-voucher-tc
 rm -f /usr/share/luci/menu.d/luci-app-voucher.json /usr/share/rpcd/acl.d/luci-app-voucher.json
 rm -rf /www/luci-static/resources/view/voucher
 rm -rf /www/voucher /www/freewifi

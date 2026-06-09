@@ -11,7 +11,7 @@ TARGET="${1:-}"
 	echo "  VOUCHER_IF=phy0-ap1"
 	echo "  UPLINK_IF=br-lan"
 	echo "  VOUCHER_SSID='Voucher WiFi'"
-	echo "  VOUCHER_CHANNEL=36"
+	echo "  VOUCHER_CHANNEL=149"
 	echo "  VOUCHER_HTMODE=VHT80"
 	echo "  VOUCHER_COUNTRY=ID"
 	echo "  VOUCHER_NET=10.18.20.0/24"
@@ -34,7 +34,7 @@ VOUCHER_RADIO="${VOUCHER_RADIO:-radio0}"
 VOUCHER_IF="${VOUCHER_IF:-phy0-ap1}"
 UPLINK_IF="${UPLINK_IF:-br-lan}"
 VOUCHER_SSID="${VOUCHER_SSID:-Voucher WiFi}"
-VOUCHER_CHANNEL="${VOUCHER_CHANNEL:-36}"
+VOUCHER_CHANNEL="${VOUCHER_CHANNEL:-149}"
 VOUCHER_HTMODE="${VOUCHER_HTMODE:-VHT80}"
 VOUCHER_COUNTRY="${VOUCHER_COUNTRY:-ID}"
 VOUCHER_NET="${VOUCHER_NET:-10.18.20.0/24}"
@@ -89,6 +89,7 @@ mkdir -p /etc/nftables.d
 mkdir -p /usr/share/luci/menu.d
 mkdir -p /usr/share/rpcd/acl.d
 mkdir -p /www/luci-static/resources/view/voucher
+mkdir -p /etc/hotplug.d/iface
 
 cp /tmp/voucher-install/usr/sbin/voucherctl /usr/sbin/voucherctl
 cp /tmp/voucher-install/usr/sbin/freewifi /usr/sbin/freewifi
@@ -108,6 +109,8 @@ cp /tmp/voucher-install/etc/init.d/freewifi /etc/init.d/freewifi
 
 cp /tmp/voucher-install/etc/nftables.d/90-voucher.nft /etc/nftables.d/90-voucher.nft
 cp /tmp/voucher-install/etc/nftables.d/91-freewifi.nft /etc/nftables.d/91-freewifi.nft
+
+cp /tmp/voucher-install/etc/hotplug.d/iface/99-voucher-tc /etc/hotplug.d/iface/99-voucher-tc
 
 cp /tmp/voucher-install/usr/share/luci/menu.d/luci-app-voucher.json /usr/share/luci/menu.d/luci-app-voucher.json
 cp /tmp/voucher-install/usr/share/rpcd/acl.d/luci-app-voucher.json /usr/share/rpcd/acl.d/luci-app-voucher.json
@@ -149,7 +152,7 @@ if [ ! -s /etc/voucher/admin_csrf ]; then
 	echo >> /etc/voucher/admin_csrf
 fi
 
-chmod 755 /usr/sbin/voucherctl /usr/sbin/freewifi /www/cgi-bin/voucher /www/cgi-bin/freewifi /www/cgi-bin/voucher-admin /www/voucher/cgi-bin/voucher /www/freewifi/cgi-bin/freewifi /etc/init.d/voucher /etc/init.d/freewifi
+chmod 755 /usr/sbin/voucherctl /usr/sbin/freewifi /www/cgi-bin/voucher /www/cgi-bin/freewifi /www/cgi-bin/voucher-admin /www/voucher/cgi-bin/voucher /www/freewifi/cgi-bin/freewifi /etc/init.d/voucher /etc/init.d/freewifi /etc/hotplug.d/iface/99-voucher-tc
 chmod 644 /www/voucher/index.html /www/freewifi/index.html /usr/share/luci/menu.d/luci-app-voucher.json /usr/share/rpcd/acl.d/luci-app-voucher.json /www/luci-static/resources/view/voucher/admin.js
 chmod 600 /etc/voucher/vouchers /etc/voucher/sessions /etc/voucher/admin_token /etc/voucher/admin_csrf /etc/freewifi/config /etc/freewifi/sessions
 
