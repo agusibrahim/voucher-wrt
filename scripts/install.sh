@@ -71,8 +71,12 @@ ssh $SSH_OPTS "$TARGET" 'command -v uci >/dev/null && command -v fw4 >/dev/null 
 echo "Ensuring minimal traffic-control packages..."
 ssh $SSH_OPTS "$TARGET" '
 if ! command -v tc >/dev/null 2>&1; then
-	opkg update
-	opkg install tc-tiny kmod-sched-core kmod-sched-act-police
+	if command -v opkg >/dev/null 2>&1; then
+		opkg update
+		opkg install tc-tiny kmod-sched-core kmod-sched-act-police
+	else
+		echo "Warning: opkg not found. Skipping traffic control packages installation."
+	fi
 fi
 '
 
