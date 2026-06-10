@@ -4,10 +4,23 @@ BASE=/etc/freewifi
 CONFIG=$BASE/config
 SESSIONS=$BASE/sessions
 NFT=/etc/nftables.d/91-freewifi.nft
-FREE_NET=10.18.30.0/24
-FREE_IP=10.18.30.1
-FREE_PORT=2081
-# Dynamically find freewifi interface by matching SSID from UCI
+
+# Source config first for overridable defaults (FREE_NET, FREE_IP, FREE_PORT, etc.)
+mkdir -p "$BASE"
+touch "$SESSIONS"
+[ -r "$CONFIG" ] && . "$CONFIG"
+
+# Defaults (used only if config doesnt set them)
+: "${FREE_NET:=10.18.30.0/24}"
+: "${FREE_IP:=10.18.30.1}"
+: "${FREE_PORT:=2081}"
+: "${UPLINK_IF:=br-lan}"
+: "${FREE_SESSION_MINUTES:=1440}"
+: "${FREE_LIMIT_QUOTA_MB:=0}"
+: "${FREE_LIMIT_DOWN_MBPS:=0}"
+: "${FREE_LIMIT_UP_MBPS:=0}"
+
+# Auto-detect interface by SSID — always fresh, never overridden by config
 FREE_SSID="$(uci -q get wireless.freewifi.ssid || echo "KAYLA INTERNET GRATIS")"
 FREE_IF="$(iw dev | awk -v ssid="$FREE_SSID" '
 	/Interface/ { iface=$2 }
@@ -17,15 +30,6 @@ FREE_IF="$(iw dev | awk -v ssid="$FREE_SSID" '
 	}
 ')"
 [ -n "$FREE_IF" ] || FREE_IF=phy0-ap2
-UPLINK_IF=br-lan
-FREE_SESSION_MINUTES=1440
-FREE_LIMIT_QUOTA_MB=0
-FREE_LIMIT_DOWN_MBPS=0
-FREE_LIMIT_UP_MBPS=0
-
-mkdir -p "$BASE"
-touch "$SESSIONS"
-[ -r "$CONFIG" ] && . "$CONFIG"
 
 now() {
 	date +%s

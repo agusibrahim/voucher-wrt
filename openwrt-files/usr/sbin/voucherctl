@@ -6,10 +6,21 @@ VOUCHERS=$BASE/vouchers
 SESSIONS=$BASE/sessions
 USES=$BASE/uses
 NFT=/etc/nftables.d/90-voucher.nft
-VOUCHER_NET=10.18.20.0/24
-VOUCHER_IP=10.18.20.1
-VOUCHER_PORT=2080
-# Dynamically find voucher interface by matching SSID from UCI
+
+# Source config first for overridable defaults
+mkdir -p "$BASE"
+touch "$VOUCHERS" "$SESSIONS" "$USES"
+[ -r "$CONFIG" ] && . "$CONFIG"
+
+# Defaults (used only if config doesnt set them)
+: "${VOUCHER_NET:=10.18.20.0/24}"
+: "${VOUCHER_IP:=10.18.20.1}"
+: "${VOUCHER_PORT:=2080}"
+: "${UPLINK_IF:=br-lan}"
+: "${VOUCHER_LIMIT_DOWN_MBPS:=0}"
+: "${VOUCHER_LIMIT_UP_MBPS:=0}"
+
+# Auto-detect interface by SSID — always fresh, never overridden by config
 VOUCHER_SSID="$(uci -q get wireless.voucher5.ssid || echo "Voucher WiFi")"
 VOUCHER_IF="$(iw dev | awk -v ssid="$VOUCHER_SSID" '
 	/Interface/ { iface=$2 }
@@ -19,13 +30,6 @@ VOUCHER_IF="$(iw dev | awk -v ssid="$VOUCHER_SSID" '
 	}
 ')"
 [ -n "$VOUCHER_IF" ] || VOUCHER_IF=phy0-ap1
-UPLINK_IF=br-lan
-VOUCHER_LIMIT_DOWN_MBPS=0
-VOUCHER_LIMIT_UP_MBPS=0
-
-mkdir -p "$BASE"
-touch "$VOUCHERS" "$SESSIONS" "$USES"
-[ -r "$CONFIG" ] && . "$CONFIG"
 
 now() {
 	date +%s
