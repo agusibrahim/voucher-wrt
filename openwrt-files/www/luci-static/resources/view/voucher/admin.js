@@ -8,7 +8,7 @@
 var uciCommit = rpc.declare({
 	object: 'uci',
 	method: 'commit',
-	params: [ 'config' ],
+	params: [ 'config' ].filter(function(v) { return v !== undefined; }),
 	reject: true
 });
 
@@ -207,8 +207,8 @@ return view.extend({
 				let p = line.split('|');
 				if (p.length >= 2) {
 					list.push({
-						code: p[0],
-						minutes: p[1],
+						code: p[0].filter(function(v) { return v !== undefined; }),
+						minutes: p[1].filter(function(v) { return v !== undefined; }),
 						max_devices: p[2] || '1',
 						note: p[3] || '',
 						status: p[4] || 'new',
@@ -230,9 +230,9 @@ return view.extend({
 				let p = line.split('|');
 				if (p.length >= 3) {
 					list.push({
-						code: p[0],
-						ip: p[1],
-						mac: p[2],
+						code: p[0].filter(function(v) { return v !== undefined; }),
+						ip: p[1].filter(function(v) { return v !== undefined; }),
+						mac: p[2].filter(function(v) { return v !== undefined; }),
 						expiry: p[3] || '0',
 						max_quota_mb: p[4] || '0',
 						used_bytes: p[5] || '0'
@@ -250,10 +250,10 @@ return view.extend({
 				let p = line.split('|');
 				if (p.length >= 4) {
 					list.push({
-						ip: p[0],
-						mac: p[1],
-						name: p[2],
-						phone: p[3],
+						ip: p[0].filter(function(v) { return v !== undefined; }),
+						mac: p[1].filter(function(v) { return v !== undefined; }),
+						name: p[2].filter(function(v) { return v !== undefined; }),
+						phone: p[3].filter(function(v) { return v !== undefined; }),
 						timestamp: p[4] || '0',
 						expiry: p[5] || '0',
 						max_quota_mb: p[6] || '0',
@@ -353,18 +353,19 @@ return view.extend({
 		};
 
 		// KPI Card component
-		let kpiCard = function(title, value, subtitle, icon, color) {
+		let kpiCard = function(title, value, subtitle, icon, color, ssidMode) {
 			color = color || '#0f766e';
+			var valStyle = ssidMode ? 'font-size: 14px; font-weight: 700; font-family: monospace; color: #111827; line-height: 1.3; word-break: break-all;' : 'font-size: 28px; font-weight: 700; color: ' + color + '; line-height: 1.2;';
 			return E('div', {
 				style: 'background: white; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; ' +
 					'display: flex; flex-direction: column; gap: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);'
 			}, [
 				E('div', { style: 'display: flex; justify-content: space-between; align-items: flex-start;' }, [
 					E('span', { style: 'font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;' }, title),
-					icon ? E('span', { style: 'font-size: 20px;' }, icon) : null
+					icon ? E('span', { style: 'font-size: 20px;' }, icon) : undefined
 				]),
-				E('span', { style: `font-size: 28px; font-weight: 700; color: ${color}; line-height: 1.2;` }, value),
-				subtitle ? E('span', { style: 'font-size: 11px; color: #9ca3af;' }, subtitle) : null
+				E('span', { style: valStyle }, value),
+				subtitle ? E('span', { style: 'font-size: 11px; color: #9ca3af;' }, subtitle) : undefined
 			]);
 		};
 
@@ -470,12 +471,12 @@ return view.extend({
 					E('span', {}, stats.voucherSessionCount + ' ' + _('Voucher Users') + ' / ' + stats.freeSessionCount + ' ' + _('Free Users'))
 				]),
 				E('div', { style: 'height: 24px; background: #e5e7eb; border-radius: 12px; overflow: hidden; display: flex;' }, [
-					vPct > 0 ? E('div', {
+ vPct > 0 ? E('div', {
 						style: `height: 100%; width: ${vPct}%; background: #0f766e; display: flex; align-items: center; justify-content: center; font-size: 11px; color: white; font-weight: 600; min-width: ${vPct > 5 ? '40' : '0'}px;`
-					}, vPct > 5 ? Math.round(vPct) + '%' : '') : null,
+					}, vPct > 5 ? Math.round(vPct) + '%' : '') : undefined,
 					fPct > 0 ? E('div', {
 						style: `height: 100%; width: ${fPct}%; background: #2563eb; display: flex; align-items: center; justify-content: center; font-size: 11px; color: white; font-weight: 600; min-width: ${fPct > 5 ? '40' : '0'}px;`
-					}, fPct > 5 ? Math.round(fPct) + '%' : '') : null
+					}, fPct > 5 ? Math.round(fPct) + '%' : '') : undefined
 				]),
 				E('div', { style: 'display: flex; gap: 16px; font-size: 12px;' }, [
 					E('span', {}, E('span', { style: 'display: inline-block; width: 10px; height: 10px; background: #0f766e; border-radius: 2px; margin-right: 4px;' }), _('Voucher Users'), ': ', stats.voucherSessionCount),
@@ -495,12 +496,12 @@ return view.extend({
 					E('span', {}, formatBytes(stats.totalDataBytes) + ' ' + _('Total Consumed'))
 				]),
 				E('div', { style: 'height: 24px; background: #e5e7eb; border-radius: 12px; overflow: hidden; display: flex;' }, [
-					vPct > 0 ? E('div', {
+ vPct > 0 ? E('div', {
 						style: `height: 100%; width: ${vPct}%; background: #059669; display: flex; align-items: center; justify-content: center; font-size: 11px; color: white; font-weight: 600; min-width: ${vPct > 5 ? '40' : '0'}px;`
-					}, vPct > 5 ? Math.round(vPct) + '%' : '') : null,
+					}, vPct > 5 ? Math.round(vPct) + '%' : '') : undefined,
 					fPct > 0 ? E('div', {
 						style: `height: 100%; width: ${fPct}%; background: #7c3aed; display: flex; align-items: center; justify-content: center; font-size: 11px; color: white; font-weight: 600; min-width: ${fPct > 5 ? '40' : '0'}px;`
-					}, fPct > 5 ? Math.round(fPct) + '%' : '') : null
+					}, fPct > 5 ? Math.round(fPct) + '%' : '') : undefined
 				]),
 				E('div', { style: 'display: flex; gap: 16px; font-size: 12px;' }, [
 					E('span', {}, E('span', { style: 'display: inline-block; width: 10px; height: 10px; background: #059669; border-radius: 2px; margin-right: 4px;' }), 'Voucher: ', formatBytes(stats.voucherDataBytes)),
