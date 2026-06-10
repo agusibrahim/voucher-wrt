@@ -451,8 +451,8 @@ return view.extend({
 			let totalSessions = stats.totalSessions;
 			let totalDataStr = formatBytes(stats.totalDataBytes);
 			return [
-				kpiCard(_('Voucher WiFi SSID'), vSsid, null, '\u{1F3F4}'),
-				kpiCard(_('Free WiFi SSID'), fSsid, null, '\u{1F4F6}'),
+				kpiCard(_('Voucher WiFi SSID'), vSsid, '', '\u{1F3F4}', null, true),
+				kpiCard(_('Free WiFi SSID'), fSsid, '', '\u{1F4F6}', null, true),
 				kpiCard(_('Active Users'), totalSessions.toString(),
 					stats.voucherSessionCount + ' ' + _('Voucher Users') + ' / ' + stats.freeSessionCount + ' ' + _('Free Users'), '\u{1F465}', '#2563eb'),
 				kpiCard(_('Total Consumed'), totalDataStr,
