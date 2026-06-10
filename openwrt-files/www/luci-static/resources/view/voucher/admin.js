@@ -41,6 +41,7 @@ return view.extend({
 			'Manage Vouchers': 'Kelola Voucher',
 			'Active Sessions': 'Sesi Aktif',
 			'Network & Speed Settings': 'Pengaturan Jaringan & Kecepatan',
+			'Portal Customizer': 'Kustomisasi Portal',
 			'WiFi Portal Status': 'Status Portal WiFi',
 			'Voucher WiFi SSID': 'SSID Voucher WiFi',
 			'Free WiFi SSID': 'SSID Internet Gratis',
@@ -57,6 +58,7 @@ return view.extend({
 			'Voucher Count': 'Jumlah Voucher',
 			'Duration (Minutes)': 'Durasi (Menit)',
 			'Max Devices': 'Maks Perangkat',
+			'Max Quota (MB)': 'Kuota Maks (MB)',
 			'Note': 'Catatan',
 			'Generating Vouchers...': 'Membuat Voucher...',
 			'Generating random bulk voucher codes.': 'Membuat kode voucher masal secara acak.',
@@ -87,6 +89,7 @@ return view.extend({
 			'Next': 'Berikutnya',
 			'Search IP / MAC / Voucher...': 'Cari IP / MAC / Voucher...',
 			'Remaining Time': 'Sisa Waktu',
+			'Data Usage': 'Pemakaian Data',
 			'No active voucher sessions': 'Tidak ada sesi voucher aktif',
 			'Disconnect client %s (%s)?': 'Putuskan koneksi client %s (%s)?',
 			'Disconnecting Client...': 'Memutuskan Koneksi...',
@@ -108,6 +111,8 @@ return view.extend({
 			'Free WiFi Download Speed Limit (Mbps)': 'Batas Download Free WiFi (Mbps)',
 			'Free WiFi Upload Speed Limit (Mbps)': 'Batas Upload Free WiFi (Mbps)',
 			'Free WiFi Session Duration (Minutes)': 'Durasi Sesi Free WiFi (Menit)',
+			'Free WiFi Max Quota (MB)': 'Kuota Maks Free WiFi (MB)',
+			'Set to 0 for unlimited data.': 'Isi 0 untuk tanpa batas kuota.',
 			'Saving Settings...': 'Menyimpan Pengaturan...',
 			'Saving to wireless UCI and writing controller configuration files.': 'Menyimpan ke UCI nirkabel dan menulis konfigurasi controller.',
 			'Settings saved successfully!': 'Pengaturan berhasil disimpan!',
@@ -131,7 +136,20 @@ return view.extend({
 			'Accent / Button Color': 'Warna Aksen / Tombol',
 			'Custom CSS (Override)': 'Kustom CSS (Override)',
 			'Free WiFi Portal Design': 'Desain Portal Free WiFi',
-			'Customize the texts, colors, and styles of the Free WiFi landing page.': 'Kustomisasi teks, warna, dan gaya tampilan halaman login Free WiFi.'
+			'Customize the texts, colors, and styles of the Free WiFi landing page.': 'Kustomisasi teks, warna, dan gaya tampilan halaman login Free WiFi.',
+			'quota_unlimited': 'Unlimited',
+			'AP Isolation': 'Isolasi AP',
+			'Enable AP Isolation for Voucher WiFi': 'Aktifkan Isolasi AP untuk Voucher WiFi',
+			'Enable AP Isolation for Free WiFi': 'Aktifkan Isolasi AP untuk Free WiFi',
+			'Disconnects WiFi briefly when toggled.': 'Memutus WiFi sejenak saat diubah.',
+			'Monthly Cap': 'Batas Pemakaian',
+			'Active Users': 'Pengguna Aktif',
+			'Total Consumed': 'Total Terpakai',
+			'Bandwidth Usage': 'Pemakaian Bandwidth',
+			'session_ratio': 'Rasio Sesi',
+			'Voucher Users': 'Voucher',
+			'Free Users': 'Free WiFi',
+			'FreeWiFi': 'Free WiFi'
 		};
 
 		let _ = function(str) {
@@ -167,7 +185,21 @@ return view.extend({
 		let voucherCfg = parseShellConfig(voucherConfigTxt);
 		let freeCfg = parseShellConfig(freeConfigTxt);
 
-		// Parse Vouchers
+		// Helper: format bytes to human-readable
+		let formatBytes = function(bytes) {
+			bytes = parseInt(bytes);
+			if (isNaN(bytes) || bytes <= 0) return '0 B';
+			let units = ['B', 'KB', 'MB', 'GB', 'TB'];
+			let i = 0;
+			let val = bytes;
+			while (val >= 1024 && i < units.length - 1) {
+				val /= 1024;
+				i++;
+			}
+			return val.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+		};
+
+		// Parse Vouchers (9-column: code|mins|maxdev|note|status|used_ip|used_mac|used_at|count|quota_mb)
 		let parseVouchers = function(txt) {
 			let list = [];
 			(txt || '').trim().split('\n').forEach(line => {
@@ -180,7 +212,8 @@ return view.extend({
 						max_devices: p[2] || '1',
 						note: p[3] || '',
 						status: p[4] || 'new',
-						used_at: p[7] || ''
+						used_at: p[7] || '',
+						quota_mb: p[9] || '0'
 					});
 				}
 			});
@@ -189,7 +222,7 @@ return view.extend({
 			return list;
 		};
 
-		// Parse Voucher Sessions
+		// Parse Voucher Sessions (7-column: code|ip|mac|exp|left|max_quota_mb|used_bytes)
 		let parseVoucherSessions = function(txt) {
 			let list = [];
 			(txt || '').trim().split('\n').forEach(line => {
@@ -201,15 +234,15 @@ return view.extend({
 						ip: p[1],
 						mac: p[2],
 						expiry: p[3] || '0',
-						max_devices: p[4] || '1',
-						note: p[5] || ''
+						max_quota_mb: p[5] || '0',
+						used_bytes: p[6] || '0'
 					});
 				}
 			});
 			return list;
 		};
 
-		// Parse Free WiFi Sessions
+		// Parse Free WiFi Sessions (8-column: ip|mac|name|phone|ts|left|max_quota_mb|used_bytes)
 		let parseFreeSessions = function(txt) {
 			let list = [];
 			(txt || '').trim().split('\n').forEach(line => {
@@ -222,7 +255,9 @@ return view.extend({
 						name: p[2],
 						phone: p[3],
 						timestamp: p[4] || '0',
-						expiry: p[5] || '0'
+						expiry: p[5] || '0',
+						max_quota_mb: p[6] || '0',
+						used_bytes: p[7] || '0'
 					});
 				}
 			});
@@ -232,6 +267,34 @@ return view.extend({
 		let allVouchers = parseVouchers(vouchersTxt);
 		let allVoucherSessions = parseVoucherSessions(voucherSessionsTxt);
 		let allFreeSessions = parseFreeSessions(freeSessionsTxt);
+
+		// Compute aggregated stats
+		let computeStats = function() {
+			let totalDataBytes = 0;
+			let voucherDataBytes = 0;
+			let freeDataBytes = 0;
+
+			allVoucherSessions.forEach(s => {
+				let b = parseInt(s.used_bytes) || 0;
+				voucherDataBytes += b;
+				totalDataBytes += b;
+			});
+			allFreeSessions.forEach(s => {
+				let b = parseInt(s.used_bytes) || 0;
+				freeDataBytes += b;
+				totalDataBytes += b;
+			});
+
+			return {
+				totalDataBytes: totalDataBytes,
+				voucherDataBytes: voucherDataBytes,
+				freeDataBytes: freeDataBytes,
+				voucherSessionCount: allVoucherSessions.length,
+				freeSessionCount: allFreeSessions.length,
+				totalSessions: allVoucherSessions.length + allFreeSessions.length,
+				voucherCount: allVouchers.length
+			};
+		};
 
 		// Local state for pagination/searching
 		let state = {
@@ -261,6 +324,48 @@ return view.extend({
 			let d = new Date(val * 1000);
 			if (isNaN(d.getTime())) return '-';
 			return d.toLocaleString();
+		};
+
+		// Data usage progress bar component
+		let dataUsageBar = function(usedBytes, maxQuotaMb) {
+			usedBytes = parseInt(usedBytes) || 0;
+			maxQuotaMb = parseInt(maxQuotaMb) || 0;
+			let usedMb = usedBytes / (1024 * 1024);
+			let pct = 0;
+			let label = formatBytes(usedBytes);
+			if (maxQuotaMb > 0) {
+				pct = Math.min(100, (usedBytes / (maxQuotaMb * 1024 * 1024)) * 100);
+				label = formatBytes(usedBytes) + ' / ' + maxQuotaMb + ' MB';
+			} else {
+				label = formatBytes(usedBytes) + ' / ' + _('quota_unlimited');
+			}
+			let barColor = pct > 90 ? '#dc2626' : (pct > 70 ? '#f59e0b' : '#0f766e');
+			return E('div', { style: 'display: flex; align-items: center; gap: 8px;' }, [
+				E('div', {
+					style: 'flex: 1; height: 16px; background: #e5e7eb; border-radius: 8px; overflow: hidden; min-width: 80px;'
+				}, [
+					E('div', {
+						style: `height: 100%; width: ${pct}%; background: ${barColor}; border-radius: 8px; transition: width 0.3s;`
+					})
+				]),
+				E('span', { style: 'font-size: 11px; white-space: nowrap; color: #4b5563;' }, label)
+			]);
+		};
+
+		// KPI Card component
+		let kpiCard = function(title, value, subtitle, icon, color) {
+			color = color || '#0f766e';
+			return E('div', {
+				style: 'background: white; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; ' +
+					'display: flex; flex-direction: column; gap: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);'
+			}, [
+				E('div', { style: 'display: flex; justify-content: space-between; align-items: flex-start;' }, [
+					E('span', { style: 'font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;' }, title),
+					icon ? E('span', { style: 'font-size: 20px;' }, icon) : null
+				]),
+				E('span', { style: `font-size: 28px; font-weight: 700; color: ${color}; line-height: 1.2;` }, value),
+				subtitle ? E('span', { style: 'font-size: 11px; color: #9ca3af;' }, subtitle) : null
+			]);
 		};
 
 		// Build DOM elements
@@ -314,17 +419,118 @@ return view.extend({
 				filterVoucherSessions();
 				filterFreeSessions();
 
-				// Update Status tab UI elements
-				tabStatus.querySelector('tr:nth-child(1) td:nth-child(2)').textContent = uci.get('wireless', 'voucher5', 'ssid') || 'Voucher WiFi';
-				tabStatus.querySelector('tr:nth-child(2) td:nth-child(2)').textContent = uci.get('wireless', 'freewifi', 'ssid') || 'KAYLA INTERNET GRATIS';
-				tabStatus.querySelector('tr:nth-child(3) td:nth-child(2)').textContent = allVouchers.length.toString();
-				tabStatus.querySelector('tr:nth-child(4) td:nth-child(2)').textContent = allVoucherSessions.length.toString();
-				tabStatus.querySelector('tr:nth-child(5) td:nth-child(2)').textContent = allFreeSessions.length.toString();
+				// Update Status tab - KPI cards
+				let stats = computeStats();
+				let vSsid = uci.get('wireless', 'voucher5', 'ssid') || 'Voucher WiFi';
+				let fSsid = uci.get('wireless', 'freewifi', 'ssid') || 'KAYLA INTERNET GRATIS';
+
+				let kpiContainer = container.querySelector('#kpi-cards');
+				if (kpiContainer) {
+					kpiContainer.innerHTML = '';
+					let cards = buildKpiCards(stats, vSsid, fSsid);
+					cards.forEach(c => kpiContainer.appendChild(c));
+				}
+
+				let ratioBar = container.querySelector('#session-ratio-bar');
+				if (ratioBar) {
+					ratioBar.innerHTML = '';
+					ratioBar.appendChild(buildRatioBar(stats));
+				}
+
+				let bandwidthStats = container.querySelector('#bandwidth-stats');
+				if (bandwidthStats) {
+					bandwidthStats.innerHTML = '';
+					bandwidthStats.appendChild(buildBandwidthStats(stats));
+				}
 			});
 		}
 
-		// ------------------ TAB 1: STATUS ------------------
+		// ---- KPI Cards Builder ----
+		function buildKpiCards(stats, vSsid, fSsid) {
+			let totalSessions = stats.totalSessions;
+			let totalDataStr = formatBytes(stats.totalDataBytes);
+			return [
+				kpiCard(_('Voucher WiFi SSID'), vSsid, null, '\u{1F3F4}'),
+				kpiCard(_('Free WiFi SSID'), fSsid, null, '\u{1F4F6}'),
+				kpiCard(_('Active Users'), totalSessions.toString(),
+					stats.voucherSessionCount + ' ' + _('Voucher Users') + ' / ' + stats.freeSessionCount + ' ' + _('Free Users'), '\u{1F465}', '#2563eb'),
+				kpiCard(_('Total Consumed'), totalDataStr,
+					_('Available Vouchers') + ': ' + stats.voucherCount, '\u{1F4CA}', '#059669')
+			];
+		}
+
+		// ---- Ratio Progress Bar ----
+		function buildRatioBar(stats) {
+			let total = stats.totalSessions || 1;
+			let vPct = (stats.voucherSessionCount / total) * 100;
+			let fPct = (stats.freeSessionCount / total) * 100;
+			return E('div', { style: 'display: flex; flex-direction: column; gap: 8px;' }, [
+				E('div', { style: 'display: flex; justify-content: space-between; font-size: 13px; color: #374151;' }, [
+					E('span', {}, _('session_ratio')),
+					E('span', {}, stats.voucherSessionCount + ' ' + _('Voucher Users') + ' / ' + stats.freeSessionCount + ' ' + _('Free Users'))
+				]),
+				E('div', { style: 'height: 24px; background: #e5e7eb; border-radius: 12px; overflow: hidden; display: flex;' }, [
+					vPct > 0 ? E('div', {
+						style: `height: 100%; width: ${vPct}%; background: #0f766e; display: flex; align-items: center; justify-content: center; font-size: 11px; color: white; font-weight: 600; min-width: ${vPct > 5 ? '40' : '0'}px;`
+					}, vPct > 5 ? Math.round(vPct) + '%' : '') : null,
+					fPct > 0 ? E('div', {
+						style: `height: 100%; width: ${fPct}%; background: #2563eb; display: flex; align-items: center; justify-content: center; font-size: 11px; color: white; font-weight: 600; min-width: ${fPct > 5 ? '40' : '0'}px;`
+					}, fPct > 5 ? Math.round(fPct) + '%' : '') : null
+				]),
+				E('div', { style: 'display: flex; gap: 16px; font-size: 12px;' }, [
+					E('span', {}, E('span', { style: 'display: inline-block; width: 10px; height: 10px; background: #0f766e; border-radius: 2px; margin-right: 4px;' }), _('Voucher Users'), ': ', stats.voucherSessionCount),
+					E('span', {}, E('span', { style: 'display: inline-block; width: 10px; height: 10px; background: #2563eb; border-radius: 2px; margin-right: 4px;' }), _('Free Users'), ': ', stats.freeSessionCount)
+				])
+			]);
+		}
+
+		// ---- Bandwidth Stats ----
+		function buildBandwidthStats(stats) {
+			let total = stats.totalDataBytes || 1;
+			let vPct = (stats.voucherDataBytes / total) * 100;
+			let fPct = (stats.freeDataBytes / total) * 100;
+			return E('div', { style: 'display: flex; flex-direction: column; gap: 8px;' }, [
+				E('div', { style: 'display: flex; justify-content: space-between; font-size: 13px; color: #374151;' }, [
+					E('span', {}, _('Bandwidth Usage')),
+					E('span', {}, formatBytes(stats.totalDataBytes) + ' ' + _('Total Consumed'))
+				]),
+				E('div', { style: 'height: 24px; background: #e5e7eb; border-radius: 12px; overflow: hidden; display: flex;' }, [
+					vPct > 0 ? E('div', {
+						style: `height: 100%; width: ${vPct}%; background: #059669; display: flex; align-items: center; justify-content: center; font-size: 11px; color: white; font-weight: 600; min-width: ${vPct > 5 ? '40' : '0'}px;`
+					}, vPct > 5 ? Math.round(vPct) + '%' : '') : null,
+					fPct > 0 ? E('div', {
+						style: `height: 100%; width: ${fPct}%; background: #7c3aed; display: flex; align-items: center; justify-content: center; font-size: 11px; color: white; font-weight: 600; min-width: ${fPct > 5 ? '40' : '0'}px;`
+					}, fPct > 5 ? Math.round(fPct) + '%' : '') : null
+				]),
+				E('div', { style: 'display: flex; gap: 16px; font-size: 12px;' }, [
+					E('span', {}, E('span', { style: 'display: inline-block; width: 10px; height: 10px; background: #059669; border-radius: 2px; margin-right: 4px;' }), 'Voucher: ', formatBytes(stats.voucherDataBytes)),
+					E('span', {}, E('span', { style: 'display: inline-block; width: 10px; height: 10px; background: #7c3aed; border-radius: 2px; margin-right: 4px;' }), 'Free WiFi: ', formatBytes(stats.freeDataBytes))
+				])
+			]);
+		}
+
+		// ------------------ TAB 1: STATUS with Analytics Dashboard ------------------
+		let stats = computeStats();
+		let vSsid = uci.get('wireless', 'voucher5', 'ssid') || 'Voucher WiFi';
+		let fSsid = uci.get('wireless', 'freewifi', 'ssid') || 'KAYLA INTERNET GRATIS';
+
 		let tabStatus = E('div', { id: 'tab-status', class: 'voucher-tab-content', style: 'display: block; margin-top: 15px;' }, [
+			// KPI Cards Grid
+			E('div', { id: 'kpi-cards', style: 'display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px;' },
+				buildKpiCards(stats, vSsid, fSsid)
+			),
+			// Analytics Row: Session Ratio + Bandwidth
+			E('div', { style: 'display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;' }, [
+				E('div', { class: 'cbi-section', style: 'margin: 0;' }, [
+					E('h3', { style: 'margin-top: 0;' }, _('session_ratio')),
+					E('div', { class: 'cbi-section-node', id: 'session-ratio-bar' }, [buildRatioBar(stats)])
+				]),
+				E('div', { class: 'cbi-section', style: 'margin: 0;' }, [
+					E('h3', { style: 'margin-top: 0;' }, _('Bandwidth Usage')),
+					E('div', { class: 'cbi-section-node', id: 'bandwidth-stats' }, [buildBandwidthStats(stats)])
+				])
+			]),
+			// Legacy Status Table
 			E('div', { class: 'cbi-section' }, [
 				E('h3', {}, _('WiFi Portal Status')),
 				E('div', { class: 'cbi-section-node' }, [
@@ -405,6 +611,13 @@ return view.extend({
 					E('div', { class: 'cbi-value-field' }, E('input', { type: 'number', id: 'bulk-max', class: 'cbi-input-text', value: '1', min: '1' }))
 				]),
 				E('div', { class: 'cbi-value' }, [
+					E('label', { class: 'cbi-value-title' }, _('Max Quota (MB)')),
+					E('div', { class: 'cbi-value-field' }, [
+						E('input', { type: 'number', id: 'bulk-quota', class: 'cbi-input-text', value: '0', min: '0' }),
+						E('span', { style: 'font-size: 11px; color: #6b7280; margin-left: 4px;' }, '(0 = ' + _('quota_unlimited') + ')')
+					])
+				]),
+				E('div', { class: 'cbi-value' }, [
 					E('label', { class: 'cbi-value-title' }, _('Note')),
 					E('div', { class: 'cbi-value-field' }, E('input', { type: 'text', id: 'bulk-note', class: 'cbi-input-text', value: 'Voucher WiFi' }))
 				]),
@@ -415,9 +628,10 @@ return view.extend({
 							let count = document.getElementById('bulk-count').value || 10;
 							let mins = document.getElementById('bulk-minutes').value || 1440;
 							let max = document.getElementById('bulk-max').value || 1;
+							let quota = document.getElementById('bulk-quota').value || 0;
 							let note = document.getElementById('bulk-note').value || 'Bulk';
 							ui.showModal(_('Generating Vouchers...'), [E('p', { class: 'spinning' }, _('Generating random bulk voucher codes.'))]);
-							fs.exec('/usr/sbin/voucherctl', ['generate', count, mins, max, note])
+							fs.exec('/usr/sbin/voucherctl', ['generate', count, mins, max, note, quota])
 								.then(() => fs.read('/etc/voucher/vouchers'))
 								.then(txt => {
 									ui.hideModal();
@@ -425,8 +639,8 @@ return view.extend({
 									state.vouchers.data = allVouchers;
 									state.vouchers.page = 1;
 									renderVouchersTable();
-									// Update Status Tab
-									tabStatus.querySelector('tr:nth-child(3) td:nth-child(2)').textContent = allVouchers.length.toString();
+									// Update KPI cards
+									refreshData().catch(() => {});
 									ui.addNotification(null, E('p', {}, _('Bulk vouchers generated successfully!')), 'info');
 								});
 						}
@@ -467,7 +681,7 @@ return view.extend({
 										state.vouchers.data = [];
 										state.vouchers.page = 1;
 										renderVouchersTable();
-										tabStatus.querySelector('tr:nth-child(3) td:nth-child(2)').textContent = '0';
+										refreshData().catch(() => {});
 										ui.addNotification(null, E('p', {}, _('All vouchers have been deleted.')), 'info');
 									});
 							}
@@ -479,6 +693,7 @@ return view.extend({
 						E('th', { class: 'th' }, _('Voucher Code')),
 						E('th', { class: 'th' }, _('Duration')),
 						E('th', { class: 'th' }, _('Max Devices')),
+						E('th', { class: 'th' }, _('Max Quota (MB)')),
 						E('th', { class: 'th' }, _('Note')),
 						E('th', { class: 'th' }, _('Status')),
 						E('th', { class: 'th' }, _('Action'))
@@ -511,14 +726,16 @@ return view.extend({
 
 			if (pageData.length === 0) {
 				tbl.appendChild(E('tr', { class: 'tr' }, [
-					E('td', { class: 'td', colspan: 6, style: 'text-align: center; font-style: italic; color: #999;' }, _('No vouchers found'))
+					E('td', { class: 'td', colspan: 7, style: 'text-align: center; font-style: italic; color: #999;' }, _('No vouchers found'))
 				]));
 			} else {
 				pageData.forEach(v => {
+					let quotaDisplay = parseInt(v.quota_mb) > 0 ? v.quota_mb + ' MB' : _('quota_unlimited');
 					tbl.appendChild(E('tr', { class: 'tr' }, [
 						E('td', { class: 'td', style: 'font-weight: bold; font-family: monospace; font-size: 1.1em;' }, v.code),
 						E('td', { class: 'td' }, `${v.minutes} Min`),
 						E('td', { class: 'td' }, `${v.max_devices} Dev`),
+						E('td', { class: 'td' }, quotaDisplay),
 						E('td', { class: 'td' }, v.note || '-'),
 						E('td', { class: 'td' }, v.status === 'used' ? E('span', { style: 'color: green; font-weight: bold;' }, _('Used') + ' (' + formatDate(v.used_at) + ')') : E('span', { style: 'color: blue;' }, _('New'))),
 						E('td', { class: 'td' }, E('button', {
@@ -533,7 +750,7 @@ return view.extend({
 											allVouchers = parseVouchers(txt);
 											state.vouchers.data = allVouchers;
 											filterVouchers();
-											tabStatus.querySelector('tr:nth-child(3) td:nth-child(2)').textContent = allVouchers.length.toString();
+											refreshData().catch(() => {});
 											ui.addNotification(null, E('p', {}, _('Voucher %s deleted successfully.').replace('%s', v.code)), 'info');
 										});
 								}
@@ -601,7 +818,7 @@ return view.extend({
 						E('th', { class: 'th' }, _('IP Address')),
 						E('th', { class: 'th' }, _('MAC Address')),
 						E('th', { class: 'th' }, _('Remaining Time')),
-						E('th', { class: 'th' }, _('Note')),
+						E('th', { class: 'th' }, _('Data Usage')),
 						E('th', { class: 'th' }, _('Action'))
 					])
 				]),
@@ -640,7 +857,7 @@ return view.extend({
 						E('td', { class: 'td' }, s.ip),
 						E('td', { class: 'td', style: 'font-family: monospace;' }, s.mac),
 						E('td', { class: 'td' }, formatRemaining(s.expiry)),
-						E('td', { class: 'td' }, s.note || '-'),
+						E('td', { class: 'td' }, dataUsageBar(s.used_bytes, s.max_quota_mb)),
 						E('td', { class: 'td' }, E('button', {
 							class: 'cbi-button cbi-button-remove',
 							click: function() {
@@ -653,7 +870,7 @@ return view.extend({
 											allVoucherSessions = parseVoucherSessions(txt);
 											state.voucherSessions.data = allVoucherSessions;
 											filterVoucherSessions();
-											tabStatus.querySelector('tr:nth-child(4) td:nth-child(2)').textContent = allVoucherSessions.length.toString();
+											refreshData().catch(() => {});
 											ui.addNotification(null, E('p', {}, _('Client %s disconnected.').replace('%s', s.ip)), 'info');
 										})
 										.catch(err => {
@@ -719,6 +936,7 @@ return view.extend({
 						E('th', { class: 'th' }, _('IP Address')),
 						E('th', { class: 'th' }, _('MAC Address')),
 						E('th', { class: 'th' }, _('Remaining Time')),
+						E('th', { class: 'th' }, _('Data Usage')),
 						E('th', { class: 'th' }, _('Action'))
 					])
 				]),
@@ -748,7 +966,7 @@ return view.extend({
 
 			if (pageData.length === 0) {
 				tbl.appendChild(E('tr', { class: 'tr' }, [
-					E('td', { class: 'td', colspan: 6, style: 'text-align: center; font-style: italic; color: #999;' }, _('No active Free WiFi sessions'))
+					E('td', { class: 'td', colspan: 7, style: 'text-align: center; font-style: italic; color: #999;' }, _('No active Free WiFi sessions'))
 				]));
 			} else {
 				pageData.forEach(s => {
@@ -758,6 +976,7 @@ return view.extend({
 						E('td', { class: 'td' }, s.ip),
 						E('td', { class: 'td', style: 'font-family: monospace;' }, s.mac),
 						E('td', { class: 'td' }, formatRemaining(s.expiry)),
+						E('td', { class: 'td' }, dataUsageBar(s.used_bytes, s.max_quota_mb)),
 						E('td', { class: 'td' }, E('button', {
 							class: 'cbi-button cbi-button-remove',
 							click: function() {
@@ -770,7 +989,7 @@ return view.extend({
 											allFreeSessions = parseFreeSessions(txt);
 											state.freeSessions.data = allFreeSessions;
 											filterFreeSessions();
-											tabStatus.querySelector('tr:nth-child(5) td:nth-child(2)').textContent = allFreeSessions.length.toString();
+											refreshData().catch(() => {});
 											ui.addNotification(null, E('p', {}, _('Client %s disconnected.').replace('%s', s.name)), 'info');
 										})
 										.catch(err => {
@@ -851,6 +1070,20 @@ return view.extend({
 							class: 'cbi-input-text',
 							value: uci.get('wireless', 'freewifi', 'ssid') || ''
 						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('AP Isolation')),
+						E('div', { class: 'cbi-value-field' }, [
+							E('label', { style: 'display: flex; align-items: center; gap: 6px; margin-bottom: 6px;' }, [
+								E('input', { type: 'checkbox', id: 'set-voucher-isolate', checked: uci.get('wireless', 'voucher5', 'isolate') === '1' ? true : null }),
+								E('span', {}, _('Enable AP Isolation for Voucher WiFi'))
+							]),
+							E('label', { style: 'display: flex; align-items: center; gap: 6px;' }, [
+								E('input', { type: 'checkbox', id: 'set-free-isolate', checked: uci.get('wireless', 'freewifi', 'isolate') === '1' ? true : null }),
+								E('span', {}, _('Enable AP Isolation for Free WiFi'))
+							]),
+							E('span', { style: 'font-size: 11px; color: #6b7280; margin-top: 4px; display: block;' }, _('Disconnects WiFi briefly when toggled.'))
+						])
 					])
 				])
 			]),
@@ -908,6 +1141,19 @@ return view.extend({
 							value: freeCfg.FREE_SESSION_MINUTES || '1440',
 							min: '1'
 						}))
+					]),
+					E('div', { class: 'cbi-value' }, [
+						E('label', { class: 'cbi-value-title' }, _('Free WiFi Max Quota (MB)')),
+						E('div', { class: 'cbi-value-field' }, [
+							E('input', {
+								type: 'number',
+								id: 'set-free-quota',
+								class: 'cbi-input-text',
+								value: freeCfg.FREE_LIMIT_QUOTA_MB || '0',
+								min: '0'
+							}),
+							E('span', { style: 'font-size: 11px; color: #6b7280; margin-left: 4px;' }, '(' + _('Set to 0 for unlimited data.') + ')')
+						])
 					])
 				])
 			]),
@@ -922,12 +1168,17 @@ return view.extend({
 						let fDown = document.getElementById('set-free-down').value || 0;
 						let fUp = document.getElementById('set-free-up').value || 0;
 						let fDur = document.getElementById('set-free-duration').value || 1440;
+						let fQuota = document.getElementById('set-free-quota').value || 0;
+						let vIsolate = document.getElementById('set-voucher-isolate').checked ? '1' : '0';
+						let fIsolate = document.getElementById('set-free-isolate').checked ? '1' : '0';
 
 						ui.showModal(_('Saving Settings...'), [E('p', { class: 'spinning' }, _('Saving to wireless UCI and writing controller configuration files.'))]);
 
 						// Save UCI wireless config
 						if (voucherSsid) uci.set('wireless', 'voucher5', 'ssid', voucherSsid);
 						if (freeSsid) uci.set('wireless', 'freewifi', 'ssid', freeSsid);
+						uci.set('wireless', 'voucher5', 'isolate', vIsolate);
+						uci.set('wireless', 'freewifi', 'isolate', fIsolate);
 
 						// Save config files
 						voucherCfg.VOUCHER_LIMIT_DOWN_MBPS = vDown;
@@ -936,6 +1187,7 @@ return view.extend({
 						freeCfg.FREE_LIMIT_DOWN_MBPS = fDown;
 						freeCfg.FREE_LIMIT_UP_MBPS = fUp;
 						freeCfg.FREE_SESSION_MINUTES = fDur;
+						freeCfg.FREE_LIMIT_QUOTA_MB = fQuota;
 
 						let serialize = function(cfg) {
 							let out = '';
@@ -955,10 +1207,7 @@ return view.extend({
 							.then(() => {
 								ui.hideModal();
 								// Update local views
-								tabStatus.querySelector('tr:nth-child(1) td:nth-child(2)').textContent = voucherSsid;
-								tabStatus.querySelector('tr:nth-child(2) td:nth-child(2)').textContent = freeSsid;
-								tabStatus.querySelector('tr:nth-child(6) td:nth-child(2)').textContent = `${vDown} Mbps Down / ${vUp} Mbps Up`;
-								tabStatus.querySelector('tr:nth-child(7) td:nth-child(2)').textContent = `${fDown} Mbps Down / ${fUp} Mbps Up`;
+								refreshData().catch(() => {});
 								ui.addNotification(null, E('p', {}, _('Settings saved successfully!')), 'info');
 							})
 							.catch(err => {

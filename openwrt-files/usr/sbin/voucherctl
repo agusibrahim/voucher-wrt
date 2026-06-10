@@ -50,17 +50,55 @@ disconnect_mac() {
 	iw dev "$VOUCHER_IF" station del "$mac" 2>/dev/null || true
 }
 
+# Migrate vouchers file from 8-column to 9-column format (add quota_mb=0)
+migrate_vouchers_format() {
+	[ -s "$VOUCHERS" ] || return 0
+	awk -F'|' 'NF < 9 && NF > 0 { found=1; exit } END { exit found ? 0 : 1 }' "$VOUCHERS" || return 0
+	tmp="$VOUCHERS.tmp"
+	awk -F'|' '{
+		if (NF < 9) print $0 "|0"
+		else print $0
+	}' "$VOUCHERS" > "$tmp"
+	mv "$tmp" "$VOUCHERS"
+	chmod 600 "$VOUCHERS"
+	logger -t voucher "migrated vouchers to 9-column format (quota_mb=0)"
+}
+
+# Parse nftables set counters: returns "IP BYTES" per element
+get_set_bytes() {
+	set_name="$1"
+	nft list set inet fw4 "$set_name" 2>/dev/null | awk '
+	BEGIN { RS=","; FS=" " }
+	{
+		ip = ""; bval = ""
+		for (i = 1; i <= NF; i++) {
+			if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) ip = $i
+			if ($i == "bytes" && $(i+1) ~ /^[0-9]+$/) bval = $(i+1)
+		}
+		if (ip != "" && bval != "") print ip, bval
+	}'
+}
+
 write_nft() {
 cat > "$NFT" <<EOF
 set voucher_allowed4 {
 	type ipv4_addr
 	flags timeout
+	counter
 }
 
 chain voucher_gate_forward {
 	type filter hook forward priority -5; policy accept;
 	iifname "$VOUCHER_IF" ip saddr @voucher_allowed4 accept
 	iifname "$VOUCHER_IF" reject
+}
+
+chain voucher_gate_input {
+	type filter hook input priority -5; policy accept;
+	iifname "$VOUCHER_IF" udp dport 53 accept
+	iifname "$VOUCHER_IF" tcp dport $VOUCHER_PORT accept
+	iifname "$VOUCHER_IF" tcp dport { 22, 23, 80, 443, 8080, 8443, 7681 } reject
+	iifname "$VOUCHER_IF" udp dport { 161, 162 } reject
 }
 
 chain voucher_gate_dstnat {
@@ -82,16 +120,57 @@ load_sessions() {
 	t="$(now)"
 	tmp="$SESSIONS.tmp"
 	: > "$tmp"
-	while IFS='|' read -r code ip mac exp; do
+
+	# Snapshot current nftables byte counters for all active IPs
+	byte_data="$(get_set_bytes voucher_allowed4)"
+
+	while IFS='|' read -r code ip mac exp max_quota_mb used_bytes last_bytes rest; do
 		[ -n "$code" ] || continue
+
+		max_quota_mb="${max_quota_mb:-0}"
+		used_bytes="${used_bytes:-0}"
+		last_bytes="${last_bytes:-0}"
+
+		# Expiry check
 		if ! [ "$exp" -gt "$t" ] 2>/dev/null; then
 			nft delete element inet fw4 voucher_allowed4 "{ $ip }" 2>/dev/null || true
 			disconnect_mac "$mac"
 			logger -t voucher "expired code=$code ip=$ip mac=$mac"
 			continue
 		fi
+
+		# Anti-spoofing: verify current MAC matches session MAC
+		current_mac="$(client_mac "$ip")"
+		if [ -n "$current_mac" ] && [ "$current_mac" != "unknown" ] && [ "$mac" != "unknown" ] && [ "$current_mac" != "$mac" ]; then
+			logger -t voucher "SPOOFING DETECTED code=$code ip=$ip expected_mac=$mac actual_mac=$current_mac"
+			nft delete element inet fw4 voucher_allowed4 "{ $ip }" 2>/dev/null || true
+			disconnect_mac "$mac"
+			disconnect_mac "$current_mac"
+			continue
+		fi
+
+		# Byte delta calculation
+		current_bytes="$(echo "$byte_data" | awk -v ip="$ip" '$1 == ip { print $2; exit }')"
+		if [ -n "$current_bytes" ] && [ "$current_bytes" -gt 0 ] 2>/dev/null; then
+			delta=$((current_bytes - last_bytes))
+			[ "$delta" -gt 0 ] 2>/dev/null || delta=0
+			used_bytes=$((used_bytes + delta))
+			last_bytes="$current_bytes"
+		fi
+
+		# Quota enforcement
+		if [ "$max_quota_mb" -gt 0 ] 2>/dev/null; then
+			max_bytes=$((max_quota_mb * 1024 * 1024))
+			if [ "$used_bytes" -ge "$max_bytes" ] 2>/dev/null; then
+				nft delete element inet fw4 voucher_allowed4 "{ $ip }" 2>/dev/null || true
+				disconnect_mac "$mac"
+				logger -t voucher "QUOTA EXCEEDED code=$code ip=$ip mac=$mac used=${used_bytes}bytes quota=${max_quota_mb}MB"
+				continue
+			fi
+		fi
+
 		left=$((exp - t))
-		echo "$code|$ip|$mac|$exp" >> "$tmp"
+		echo "$code|$ip|$mac|$exp|$max_quota_mb|$used_bytes|$last_bytes" >> "$tmp"
 		nft add element inet fw4 voucher_allowed4 "{ $ip timeout ${left}s }" 2>/dev/null || true
 	done < "$SESSIONS"
 	mv "$tmp" "$SESSIONS"
@@ -99,7 +178,7 @@ load_sessions() {
 
 mark_active_sessions_used() {
 	[ -s "$SESSIONS" ] || return 0
-	while IFS='|' read -r code ip mac exp; do
+	while IFS='|' read -r code ip mac exp max_quota_mb used_bytes last_bytes rest; do
 		[ -n "$code" ] || continue
 		line="$(voucher_line "$code")"
 		status="$(echo "$line" | awk -F'|' '{ print $5 }')"
@@ -190,6 +269,7 @@ speed_status() {
 }
 
 init_rules() {
+	migrate_vouchers_format
 	migrate_used_vouchers
 	write_nft
 	fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1
@@ -260,9 +340,9 @@ mark_voucher_used() {
 	awk -F'|' -v c="$code" -v ip="$ip" -v mac="$mac" -v t="$t" '
 		$1 == c {
 			note=$4
-			status=$5
-			if (status == "") status="new"
-			print $1 "|" $2 "|" $3 "|" note "|used|" ip "|" mac "|" t
+			quota=$9
+			if (quota == "") quota=0
+			print $1 "|" $2 "|" $3 "|" note "|used|" ip "|" mac "|" t "|" quota
 			next
 		}
 		{ print }
@@ -306,8 +386,10 @@ login() {
 
 	mins="$(echo "$line" | awk -F'|' '{ print $2 }')"
 	maxdev="$(echo "$line" | awk -F'|' '{ print $3 }')"
+	quota_mb="$(echo "$line" | awk -F'|' '{ print $9 }')"
 	[ "$mins" -gt 0 ] 2>/dev/null || { echo "Durasi voucher tidak valid"; return 1; }
 	[ "$maxdev" -gt 0 ] 2>/dev/null || maxdev=1
+	[ "$quota_mb" -gt 0 ] 2>/dev/null || quota_mb=0
 
 	mac="$(client_mac "$ip")"
 	[ -n "$mac" ] || mac=unknown
@@ -338,35 +420,50 @@ login() {
 	exp=$(( $(now) + mins * 60 ))
 	tmp="$SESSIONS.tmp"
 	awk -F'|' -v c="$code" -v ip="$ip" -v mac="$mac" '!(($1 == c) && ($2 == ip || (mac != "unknown" && $3 == mac)))' "$SESSIONS" > "$tmp"
-	echo "$code|$ip|$mac|$exp" >> "$tmp"
+	echo "$code|$ip|$mac|$exp|$quota_mb|0|0" >> "$tmp"
 	mv "$tmp" "$SESSIONS"
 	mark_voucher_used "$code" "$ip" "$mac"
 	consume_voucher_if_full "$code" "$maxdev"
 	nft add element inet fw4 voucher_allowed4 "{ $ip timeout $((mins * 60))s }" 2>/dev/null || init_rules
-	logger -t voucher "login code=$code ip=$ip mac=$mac minutes=$mins"
-	echo "OK|$mins"
+	logger -t voucher "login code=$code ip=$ip mac=$mac minutes=$mins quota_mb=$quota_mb"
+	echo "OK|$mins|$quota_mb"
 }
 
 status() {
 	cleanup
 	t="$(now)"
-	awk -F'|' -v t="$t" '{ printf "%s %s %s %d menit tersisa\n", $1, $2, $3, int(($4-t)/60) }' "$SESSIONS"
+	while IFS='|' read -r code ip mac exp max_quota_mb used_bytes last_bytes rest; do
+		[ -n "$code" ] || continue
+		if [ "$exp" -gt "$t" ] 2>/dev/null; then
+			left=$(( (exp - t) / 60 ))
+			printf "%s %s %s %d menit tersisa\n" "$code" "$ip" "$mac" "$left"
+		fi
+	done < "$SESSIONS"
 }
 
 list_vouchers() {
 	migrate_used_vouchers
-	while IFS='|' read -r code mins maxdev note status used_ip used_mac used_at; do
+	while IFS='|' read -r code mins maxdev note status used_ip used_mac used_at quota_mb; do
 		[ -n "$code" ] || continue
 		[ -n "$status" ] || status="new"
+		[ -n "$quota_mb" ] || quota_mb=0
 		count="$(voucher_use_count "$code")"
-		printf "%s|%s|%s|%s|%s|%s|%s|%s|%s\n" "$code" "$mins" "$maxdev" "$note" "$status" "$used_ip" "$used_mac" "$used_at" "$count"
+		printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" "$code" "$mins" "$maxdev" "$note" "$status" "$used_ip" "$used_mac" "$used_at" "$count" "$quota_mb"
 	done < "$VOUCHERS"
 }
 
 list_sessions() {
 	cleanup
 	t="$(now)"
-	awk -F'|' -v t="$t" '{ printf "%s|%s|%s|%s|%d\n", $1, $2, $3, $4, int(($4-t)/60) }' "$SESSIONS"
+	while IFS='|' read -r code ip mac exp max_quota_mb used_bytes last_bytes rest; do
+		[ -n "$code" ] || continue
+		if [ "$exp" -gt "$t" ] 2>/dev/null; then
+			left=$(( (exp - t) / 60 ))
+			[ -n "$max_quota_mb" ] || max_quota_mb=0
+			[ -n "$used_bytes" ] || used_bytes=0
+			printf "%s|%s|%s|%s|%d|%s|%s\n" "$code" "$ip" "$mac" "$exp" "$left" "$max_quota_mb" "$used_bytes"
+		fi
+	done < "$SESSIONS"
 }
 
 add_voucher() {
@@ -374,16 +471,29 @@ add_voucher() {
 	mins="$2"
 	maxdev="${3:-1}"
 	note="$4"
+	quota_mb="${5:-0}"
 	[ -n "$code" ] || { echo "Kode kosong"; return 1; }
 	[ "${#code}" -eq 5 ] 2>/dev/null || { echo "Kode harus 5 karakter alfanumerik"; return 1; }
 	[ "$mins" -gt 0 ] 2>/dev/null || { echo "Durasi menit tidak valid"; return 1; }
 	[ "$maxdev" -gt 0 ] 2>/dev/null || maxdev=1
+	[ "$quota_mb" -ge 0 ] 2>/dev/null || quota_mb=0
 	tmp="$VOUCHERS.tmp"
 	awk -F'|' -v c="$code" '$1 != c' "$VOUCHERS" > "$tmp"
 	echo "$code|$mins|$maxdev|$note|new|||" >> "$tmp"
 	mv "$tmp" "$VOUCHERS"
 	chmod 600 "$VOUCHERS"
-	echo "Voucher $code dibuat: $mins menit, max $maxdev perangkat"
+	if [ "$quota_mb" -gt 0 ]; then
+		# Update the just-added line to include quota_mb
+		awk -F'|' -v c="$code" -v q="$quota_mb" '
+			$1 == c && NF < 9 { print $0 "|" q; next }
+			{ print }
+		' "$VOUCHERS" > "$VOUCHERS.tmp"
+		mv "$VOUCHERS.tmp" "$VOUCHERS"
+		chmod 600 "$VOUCHERS"
+	fi
+	quota_msg=""
+	[ "$quota_mb" -gt 0 ] && quota_msg=", kuota ${quota_mb}MB"
+	echo "Voucher $code dibuat: $mins menit${quota_msg}, max $maxdev perangkat"
 }
 
 random_code() {
@@ -398,14 +508,16 @@ generate_vouchers() {
 	mins="${2:-1440}"
 	maxdev="${3:-1}"
 	note="${4:-generated}"
+	quota_mb="${5:-0}"
 	[ "$count" -gt 0 ] 2>/dev/null || count=10
 	[ "$mins" -gt 0 ] 2>/dev/null || mins=1440
 	[ "$maxdev" -gt 0 ] 2>/dev/null || maxdev=1
+	[ "$quota_mb" -ge 0 ] 2>/dev/null || quota_mb=0
 	i=0
 	while [ "$i" -lt "$count" ]; do
 		code="$(random_code 5)"
 		if [ -z "$(voucher_line "$code")" ]; then
-			add_voucher "$code" "$mins" "$maxdev" "$note"
+			add_voucher "$code" "$mins" "$maxdev" "$note" "$quota_mb"
 			i=$((i + 1))
 		fi
 	done
@@ -471,5 +583,5 @@ case "$1" in
 	kill-all) kill_all_sessions ;;
 	speed) set_speed_limit "$2" "$3" ;;
 	speed-status) speed_status ;;
-	*) echo "Usage: voucherctl init|cleanup|login CODE|status|vouchers|sessions|add CODE MINUTES [MAX_DEVICES] [NOTE]|generate [COUNT] [MINUTES] [MAX_DEVICES] [NOTE]|del CODE|kill [CODE] [IP] [MAC]|kill-all|speed DOWN_MBPS UP_MBPS|speed-status"; exit 1 ;;
+	*) echo "Usage: voucherctl init|cleanup|login CODE|status|vouchers|sessions|add CODE MINUTES [MAX_DEVICES] [NOTE] [QUOTA_MB]|generate [COUNT] [MINUTES] [MAX_DEVICES] [NOTE] [QUOTA_MB]|del CODE|kill [CODE] [IP] [MAC]|kill-all|speed DOWN_MBPS UP_MBPS|speed-status"; exit 1 ;;
 esac

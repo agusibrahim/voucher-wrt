@@ -97,16 +97,18 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 				code="$(clean_code "$(printf '%s' "$params" | field code)")"
 				mins="$(duration_mins)"
 				maxdev="$(clean_num "$(printf '%s' "$params" | field maxdev)")"
+				quota_mb="$(clean_num "$(printf '%s' "$params" | field quota_mb)")"
 				note="$(printf '%s' "$params" | field note | tr -cd 'A-Za-z0-9 ._-')"
-				out="$(/usr/sbin/voucherctl add "$code" "${mins:-1440}" "${maxdev:-1}" "$note" 2>&1)" && msg="$out" || err="$out"
+				out="$(/usr/sbin/voucherctl add "$code" "${mins:-1440}" "${maxdev:-1}" "$note" "${quota_mb:-0}" 2>&1)" && msg="$out" || err="$out"
 				did_action=1
 				;;
 			generate)
 				count="$(clean_num "$(printf '%s' "$params" | field count)")"
 				mins="$(duration_mins)"
 				maxdev="$(clean_num "$(printf '%s' "$params" | field maxdev)")"
+				quota_mb="$(clean_num "$(printf '%s' "$params" | field quota_mb)")"
 				note="$(printf '%s' "$params" | field note | tr -cd 'A-Za-z0-9 ._-')"
-				out="$(/usr/sbin/voucherctl generate "${count:-10}" "${mins:-1440}" "${maxdev:-1}" "$note" 2>&1)" && msg="$out" || err="$out"
+				out="$(/usr/sbin/voucherctl generate "${count:-10}" "${mins:-1440}" "${maxdev:-1}" "$note" "${quota_mb:-0}" 2>&1)" && msg="$out" || err="$out"
 				did_action=1
 				;;
 			del)
@@ -132,12 +134,9 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 				did_action=1
 				;;
 			speed)
-				percent="$(clean_num "$(printf '%s' "$params" | field percent)")"
 				down_mbps="$(clean_num "$(printf '%s' "$params" | field down_mbps)")"
 				up_mbps="$(clean_num "$(printf '%s' "$params" | field up_mbps)")"
-				down_kbit=$(( ${down_mbps:-0} * 1000 ))
-				up_kbit=$(( ${up_mbps:-0} * 1000 ))
-				out="$(/usr/sbin/voucherctl speed "${percent:-100}" "$down_kbit" "$up_kbit" 2>&1)" && msg="$out" || err="$out"
+				out="$(/usr/sbin/voucherctl speed "${down_mbps:-0}" "${up_mbps:-0}" 2>&1)" && msg="$out" || err="$out"
 				did_action=1
 				;;
 		esac
@@ -218,6 +217,7 @@ $(/usr/sbin/voucherctl speed-status 2>/dev/null | html_escape)
 <label>Jam<br><input name="hours" value="0" inputmode="numeric"></label>
 <label>Menit<br><input name="mins" value="0" inputmode="numeric"></label>
 <label>Max device<br><input name="maxdev" value="1" inputmode="numeric"></label>
+<label>Kuota (MB, 0=tanpa batas)<br><input name="quota_mb" value="0" inputmode="numeric"></label>
 <label>Catatan<br><input name="note" value="1 hari"></label>
 <button>Generate</button>
 </form>
@@ -233,6 +233,7 @@ $(/usr/sbin/voucherctl speed-status 2>/dev/null | html_escape)
 <label>Jam<br><input name="hours" value="0" inputmode="numeric"></label>
 <label>Menit<br><input name="mins" value="0" inputmode="numeric"></label>
 <label>Max device<br><input name="maxdev" value="1" inputmode="numeric"></label>
+<label>Kuota (MB, 0=tanpa batas)<br><input name="quota_mb" value="0" inputmode="numeric"></label>
 <label>Catatan<br><input name="note"></label>
 <button>Tambah</button>
 </form>
@@ -245,14 +246,16 @@ $(/usr/sbin/voucherctl speed-status 2>/dev/null | html_escape)
 <input type="hidden" name="action" value="killall">
 <button class="danger">Kill Semua Sesi</button>
 </form>
-<table><tr><th>Kode</th><th>IP</th><th>MAC</th><th>Sisa</th><th>Aksi</th></tr>
+<table><tr><th>Kode</th><th>IP</th><th>MAC</th><th>Sisa</th><th>Kuota</th><th>Aksi</th></tr>
 EOF
 
-/usr/sbin/voucherctl sessions | while IFS='|' read -r code ip mac exp left; do
+/usr/sbin/voucherctl sessions | while IFS='|' read -r code ip mac exp left max_quota_mb used_bytes; do
 	[ -n "$code" ] || continue
-	left_label="$(format_duration "$left") ($left menit)"
-	printf '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method="post" action="/cgi-bin/voucher-admin"><input type="hidden" name="token" value="%s"><input type="hidden" name="csrf" value="%s"><input type="hidden" name="action" value="kill"><input type="hidden" name="code" value="%s"><input type="hidden" name="ip" value="%s"><input type="hidden" name="mac" value="%s"><button class="danger">Kill</button></form></td></tr>\n' \
-		"$(printf '%s' "$code" | html_escape)" "$(printf '%s' "$ip" | html_escape)" "$(printf '%s' "$mac" | html_escape)" "$(printf '%s' "$left_label" | html_escape)" "$(printf '%s' "$token" | html_escape)" "$(printf '%s' "$csrf_saved" | html_escape)" "$(printf '%s' "$code" | html_escape)" "$(printf '%s' "$ip" | html_escape)" "$(printf '%s' "$mac" | html_escape)"
+	now_epoch=$(date +%s); left=$(( (exp - now_epoch) / 60 )); left_label="$(format_duration "$left") ($left menit)"
+	quota_label="Unlimited"
+	[ "$max_quota_mb" -gt 0 ] 2>/dev/null && quota_label="${max_quota_mb}MB"
+	printf '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method="post" action="/cgi-bin/voucher-admin"><input type="hidden" name="token" value="%s"><input type="hidden" name="csrf" value="%s"><input type="hidden" name="action" value="kill"><input type="hidden" name="code" value="%s"><input type="hidden" name="ip" value="%s"><input type="hidden" name="mac" value="%s"><button class="danger">Kill</button></form></td></tr>\n' \
+		"$(printf '%s' "$code" | html_escape)" "$(printf '%s' "$ip" | html_escape)" "$(printf '%s' "$mac" | html_escape)" "$(printf '%s' "$left_label" | html_escape)" "$(printf '%s' "$quota_label" | html_escape)" "$(printf '%s' "$token" | html_escape)" "$(printf '%s' "$csrf_saved" | html_escape)" "$(printf '%s' "$code" | html_escape)" "$(printf '%s' "$ip" | html_escape)" "$(printf '%s' "$mac" | html_escape)"
 done
 
 cat <<EOF
@@ -260,15 +263,17 @@ cat <<EOF
 </section>
 <section>
 <h2>Pengguna Internet Gratis</h2>
-<table><tr><th>IP</th><th>MAC</th><th>Nama</th><th>Telepon</th><th>Sisa</th><th>Aksi</th></tr>
+<table><tr><th>IP</th><th>MAC</th><th>Nama</th><th>Telepon</th><th>Sisa</th><th>Kuota</th><th>Aksi</th></tr>
 EOF
 
 if [ -x /usr/sbin/freewifi ]; then
-	/usr/sbin/freewifi sessions | while IFS='|' read -r ip mac name phone ts left; do
+	/usr/sbin/freewifi sessions | while IFS='|' read -r ip mac name phone ts exp max_quota_mb used_bytes; do
 		[ -n "$ip" ] || continue
-		left_label="$(format_duration "$left") ($left menit)"
-		printf '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method="post" action="/cgi-bin/voucher-admin"><input type="hidden" name="token" value="%s"><input type="hidden" name="csrf" value="%s"><input type="hidden" name="action" value="freekill"><input type="hidden" name="ip" value="%s"><input type="hidden" name="mac" value="%s"><button class="danger">Kill</button></form></td></tr>\n' \
-			"$(printf '%s' "$ip" | html_escape)" "$(printf '%s' "$mac" | html_escape)" "$(printf '%s' "$name" | html_escape)" "$(printf '%s' "$phone" | html_escape)" "$(printf '%s' "$left_label" | html_escape)" "$(printf '%s' "$token" | html_escape)" "$(printf '%s' "$csrf_saved" | html_escape)" "$(printf '%s' "$ip" | html_escape)" "$(printf '%s' "$mac" | html_escape)"
+		now_epoch=$(date +%s); left=$(( (exp - now_epoch) / 60 )); left_label="$(format_duration "$left") ($left menit)"
+		quota_label="Unlimited"
+		[ "$max_quota_mb" -gt 0 ] 2>/dev/null && quota_label="${max_quota_mb}MB"
+		printf '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method="post" action="/cgi-bin/voucher-admin"><input type="hidden" name="token" value="%s"><input type="hidden" name="csrf" value="%s"><input type="hidden" name="action" value="freekill"><input type="hidden" name="ip" value="%s"><input type="hidden" name="mac" value="%s"><button class="danger">Kill</button></form></td></tr>\n' \
+			"$(printf '%s' "$ip" | html_escape)" "$(printf '%s' "$mac" | html_escape)" "$(printf '%s' "$name" | html_escape)" "$(printf '%s' "$phone" | html_escape)" "$(printf '%s' "$left_label" | html_escape)" "$(printf '%s' "$quota_label" | html_escape)" "$(printf '%s' "$token" | html_escape)" "$(printf '%s' "$csrf_saved" | html_escape)" "$(printf '%s' "$ip" | html_escape)" "$(printf '%s' "$mac" | html_escape)"
 	done
 fi
 
@@ -277,16 +282,18 @@ cat <<EOF
 </section>
 <section>
 <h2>Daftar Voucher</h2>
-<table><tr><th>Kode</th><th>Durasi</th><th>Max device</th><th>Status</th><th>Catatan</th><th>Aksi</th></tr>
+<table><tr><th>Kode</th><th>Durasi</th><th>Max device</th><th>Kuota</th><th>Status</th><th>Catatan</th><th>Aksi</th></tr>
 EOF
 
-/usr/sbin/voucherctl vouchers | while IFS='|' read -r code mins maxdev note status used_ip used_mac used_at used_count; do
+/usr/sbin/voucherctl vouchers | while IFS='|' read -r code mins maxdev note status used_ip used_mac used_at used_count quota_mb; do
 	[ -n "$code" ] || continue
 	duration_label="$(format_duration "$mins") ($mins menit)"
 	status_label="$status"
 	[ "$status" = "used" ] && status_label="used ${used_count:-1}/$maxdev $used_ip $used_mac"
-	printf '<tr><td><strong>%s</strong></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method="post" action="/cgi-bin/voucher-admin"><input type="hidden" name="token" value="%s"><input type="hidden" name="csrf" value="%s"><input type="hidden" name="action" value="del"><input type="hidden" name="code" value="%s"><button class="danger">Hapus</button></form></td></tr>\n' \
-		"$(printf '%s' "$code" | html_escape)" "$(printf '%s' "$duration_label" | html_escape)" "$(printf '%s' "$maxdev" | html_escape)" "$(printf '%s' "$status_label" | html_escape)" "$(printf '%s' "$note" | html_escape)" "$(printf '%s' "$token" | html_escape)" "$(printf '%s' "$csrf_saved" | html_escape)" "$(printf '%s' "$code" | html_escape)"
+	quota_label="Unlimited"
+	[ "$quota_mb" -gt 0 ] 2>/dev/null && quota_label="${quota_mb}MB"
+	printf '<tr><td><strong>%s</strong></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><form method="post" action="/cgi-bin/voucher-admin"><input type="hidden" name="token" value="%s"><input type="hidden" name="csrf" value="%s"><input type="hidden" name="action" value="del"><input type="hidden" name="code" value="%s"><button class="danger">Hapus</button></form></td></tr>\n' \
+		"$(printf '%s' "$code" | html_escape)" "$(printf '%s' "$duration_label" | html_escape)" "$(printf '%s' "$maxdev" | html_escape)" "$(printf '%s' "$quota_label" | html_escape)" "$(printf '%s' "$status_label" | html_escape)" "$(printf '%s' "$note" | html_escape)" "$(printf '%s' "$token" | html_escape)" "$(printf '%s' "$csrf_saved" | html_escape)" "$(printf '%s' "$code" | html_escape)"
 done
 
 cat <<'EOF'

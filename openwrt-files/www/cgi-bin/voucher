@@ -43,8 +43,12 @@ if [ "$REQUEST_METHOD" = "GET" ] && [ -n "$QUERY_STRING" ]; then
 	result="$(/usr/sbin/voucherctl login "$code" 2>&1)"
 	case "$result" in
 		OK\|*)
-			mins="${result#OK|}"
+			rest="${result#OK|}"
+			mins="${rest%%|*}"
+			quota_mb="${rest#*|}"
+			[ "$quota_mb" = "$mins" ] && quota_mb=0
 			ok="Voucher aktif selama $(format_duration "$mins"). Silakan buka ulang website tujuan."
+			[ "$quota_mb" -gt 0 ] 2>/dev/null && ok="${ok} (Kuota: ${quota_mb}MB)"
 			;;
 		*) msg="$result" ;;
 	esac
@@ -54,8 +58,12 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
 	result="$(/usr/sbin/voucherctl login "$code" 2>&1)"
 	case "$result" in
 		OK\|*)
-			mins="${result#OK|}"
+			rest="${result#OK|}"
+			mins="${rest%%|*}"
+			quota_mb="${rest#*|}"
+			[ "$quota_mb" = "$mins" ] && quota_mb=0
 			ok="Voucher aktif selama $(format_duration "$mins"). Silakan buka ulang website tujuan."
+			[ "$quota_mb" -gt 0 ] 2>/dev/null && ok="${ok} (Kuota: ${quota_mb}MB)"
 			;;
 		*) msg="$result" ;;
 	esac

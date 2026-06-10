@@ -19,6 +19,7 @@ FREE_IF="$(iw dev | awk -v ssid="$FREE_SSID" '
 [ -n "$FREE_IF" ] || FREE_IF=phy0-ap2
 UPLINK_IF=br-lan
 FREE_SESSION_MINUTES=1440
+FREE_LIMIT_QUOTA_MB=0
 FREE_LIMIT_DOWN_MBPS=0
 FREE_LIMIT_UP_MBPS=0
 
@@ -53,17 +54,56 @@ disconnect_mac() {
 	iw dev "$FREE_IF" station del "$mac" 2>/dev/null || true
 }
 
+# Migrate free sessions from 6-column to 9-column format (add quota, used_bytes, last_bytes)
+migrate_free_sessions() {
+	[ -s "$SESSIONS" ] || return 0
+	awk -F'|' 'NF < 9 && NF > 0 { found=1; exit } END { exit found ? 0 : 1 }' "$SESSIONS" || return 0
+	tmp="$SESSIONS.tmp"
+	awk -F'|' '{
+		if (NF == 6) print $0 "|0|0|0"
+		else if (NF < 9) print $0 "|0|0|0"
+		else print $0
+	}' "$SESSIONS" > "$tmp"
+	mv "$tmp" "$SESSIONS"
+	chmod 600 "$SESSIONS"
+	logger -t freewifi "migrated sessions to 9-column format (quota=0)"
+}
+
+# Parse nftables set counters: returns "IP BYTES" per element
+get_set_bytes() {
+	set_name="$1"
+	nft list set inet fw4 "$set_name" 2>/dev/null | awk '
+	BEGIN { RS=","; FS=" " }
+	{
+		ip = ""; bval = ""
+		for (i = 1; i <= NF; i++) {
+			if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) ip = $i
+			if ($i == "bytes" && $(i+1) ~ /^[0-9]+$/) bval = $(i+1)
+		}
+		if (ip != "" && bval != "") print ip, bval
+	}'
+}
+
 write_nft() {
 cat > "$NFT" <<EOF
 set freewifi_allowed4 {
 	type ipv4_addr
 	flags timeout
+	counter
 }
 
 chain freewifi_gate_forward {
 	type filter hook forward priority -4; policy accept;
 	iifname "$FREE_IF" ip saddr @freewifi_allowed4 accept
 	iifname "$FREE_IF" reject
+}
+
+chain freewifi_gate_input {
+	type filter hook input priority -4; policy accept;
+	iifname "$FREE_IF" udp dport 53 accept
+	iifname "$FREE_IF" tcp dport $FREE_PORT accept
+	iifname "$FREE_IF" tcp dport { 22, 23, 80, 443, 8080, 8443, 7681 } reject
+	iifname "$FREE_IF" udp dport { 161, 162 } reject
 }
 
 chain freewifi_gate_dstnat {
@@ -117,6 +157,7 @@ FREE_PORT=$FREE_PORT
 FREE_IF=$FREE_IF
 UPLINK_IF=$UPLINK_IF
 FREE_SESSION_MINUTES=$FREE_SESSION_MINUTES
+FREE_LIMIT_QUOTA_MB=$FREE_LIMIT_QUOTA_MB
 FREE_LIMIT_DOWN_MBPS=$FREE_LIMIT_DOWN_MBPS
 FREE_LIMIT_UP_MBPS=$FREE_LIMIT_UP_MBPS
 EOF
@@ -140,21 +181,63 @@ load_sessions() {
 	t="$(now)"
 	tmp="$SESSIONS.tmp"
 	: > "$tmp"
-	while IFS='|' read -r ip mac name phone ts exp; do
+
+	# Snapshot current nftables byte counters
+	byte_data="$(get_set_bytes freewifi_allowed4)"
+
+	while IFS='|' read -r ip mac name phone ts exp max_quota_mb used_bytes last_bytes rest; do
 		[ -n "$ip" ] || continue
+
+		max_quota_mb="${max_quota_mb:-0}"
+		used_bytes="${used_bytes:-0}"
+		last_bytes="${last_bytes:-0}"
+
+		# Expiry check
 		if ! [ "$exp" -gt "$t" ] 2>/dev/null; then
 			nft delete element inet fw4 freewifi_allowed4 "{ $ip }" 2>/dev/null || true
 			disconnect_mac "$mac"
 			continue
 		fi
+
+		# Anti-spoofing: verify current MAC matches session MAC
+		current_mac="$(client_mac "$ip")"
+		if [ -n "$current_mac" ] && [ "$current_mac" != "unknown" ] && [ "$mac" != "unknown" ] && [ "$current_mac" != "$mac" ]; then
+			logger -t freewifi "SPOOFING DETECTED ip=$ip expected_mac=$mac actual_mac=$current_mac"
+			nft delete element inet fw4 freewifi_allowed4 "{ $ip }" 2>/dev/null || true
+			disconnect_mac "$mac"
+			disconnect_mac "$current_mac"
+			continue
+		fi
+
+		# Byte delta calculation
+		current_bytes="$(echo "$byte_data" | awk -v ip="$ip" '$1 == ip { print $2; exit }')"
+		if [ -n "$current_bytes" ] && [ "$current_bytes" -gt 0 ] 2>/dev/null; then
+			delta=$((current_bytes - last_bytes))
+			[ "$delta" -gt 0 ] 2>/dev/null || delta=0
+			used_bytes=$((used_bytes + delta))
+			last_bytes="$current_bytes"
+		fi
+
+		# Quota enforcement
+		if [ "$max_quota_mb" -gt 0 ] 2>/dev/null; then
+			max_bytes=$((max_quota_mb * 1024 * 1024))
+			if [ "$used_bytes" -ge "$max_bytes" ] 2>/dev/null; then
+				nft delete element inet fw4 freewifi_allowed4 "{ $ip }" 2>/dev/null || true
+				disconnect_mac "$mac"
+				logger -t freewifi "QUOTA EXCEEDED ip=$ip mac=$mac used=${used_bytes}bytes quota=${max_quota_mb}MB"
+				continue
+			fi
+		fi
+
 		left=$((exp - t))
-		echo "$ip|$mac|$name|$phone|$ts|$exp" >> "$tmp"
+		echo "$ip|$mac|$name|$phone|$ts|$exp|$max_quota_mb|$used_bytes|$last_bytes" >> "$tmp"
 		nft add element inet fw4 freewifi_allowed4 "{ $ip timeout ${left}s }" 2>/dev/null || true
 	done < "$SESSIONS"
 	mv "$tmp" "$SESSIONS"
 }
 
 init_rules() {
+	migrate_free_sessions
 	write_nft
 	fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1
 	nft flush set inet fw4 freewifi_allowed4 2>/dev/null || true
@@ -173,20 +256,29 @@ login() {
 	[ -n "$mac" ] || mac=unknown
 	ts="$(now)"
 	exp=$((ts + FREE_SESSION_MINUTES * 60))
+	quota_mb="${FREE_LIMIT_QUOTA_MB:-0}"
 	tmp="$SESSIONS.tmp"
 	awk -F'|' -v ip="$ip" -v mac="$mac" '!(($1 == ip) || ($2 == mac && mac != "unknown"))' "$SESSIONS" > "$tmp"
-	echo "$ip|$mac|$name|$phone|$ts|$exp" >> "$tmp"
+	echo "$ip|$mac|$name|$phone|$ts|$exp|$quota_mb|0|0" >> "$tmp"
 	mv "$tmp" "$SESSIONS"
 	chmod 600 "$SESSIONS"
 	nft add element inet fw4 freewifi_allowed4 "{ $ip timeout $((FREE_SESSION_MINUTES * 60))s }" 2>/dev/null || init_rules
-	logger -t freewifi "login ip=$ip mac=$mac name=$name phone=$phone"
-	echo "OK|$FREE_SESSION_MINUTES"
+	logger -t freewifi "login ip=$ip mac=$mac name=$name phone=$phone quota_mb=$quota_mb"
+	echo "OK|$FREE_SESSION_MINUTES|$quota_mb"
 }
 
 sessions() {
 	load_sessions
 	t="$(now)"
-	awk -F'|' -v t="$t" '{ printf "%s|%s|%s|%s|%s|%d\n", $1, $2, $3, $4, $5, int(($6-t)/60) }' "$SESSIONS"
+	while IFS='|' read -r ip mac name phone ts exp max_quota_mb used_bytes last_bytes rest; do
+		[ -n "$ip" ] || continue
+		if [ "$exp" -gt "$t" ] 2>/dev/null; then
+			left=$(( (exp - t) / 60 ))
+			[ -n "$max_quota_mb" ] || max_quota_mb=0
+			[ -n "$used_bytes" ] || used_bytes=0
+			printf "%s|%s|%s|%s|%s|%s|%s|%s\n" "$ip" "$mac" "$name" "$phone" "$ts" "$exp" "$max_quota_mb" "$used_bytes"
+		fi
+	done < "$SESSIONS"
 }
 
 kill_session() {
@@ -205,6 +297,7 @@ status() {
 	echo "if=$FREE_IF"
 	echo "net=$FREE_NET"
 	echo "portal=$FREE_IP:$FREE_PORT"
+	echo "limit_quota_mb=$FREE_LIMIT_QUOTA_MB"
 	echo "limit_down_mbps=$FREE_LIMIT_DOWN_MBPS"
 	echo "limit_up_mbps=$FREE_LIMIT_UP_MBPS"
 	command -v tc >/dev/null 2>&1 && {

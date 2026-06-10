@@ -30,7 +30,9 @@ if [ -n "$params" ]; then
 	phone="$(printf '%s' "$params" | field phone)"
 	result="$(/usr/sbin/freewifi login "$name" "$phone" 2>&1)"
 	case "$result" in
-		OK\|*) ok="Terhubung. Silakan buka ulang website tujuan." ;;
+		OK\|*) rest="${result#OK|}"; mins="${rest%%|*}"; quota_mb="${rest#*|}"; [ "$quota_mb" = "$mins" ] && quota_mb=0
+			ok="Terhubung. Silakan buka ulang website tujuan."
+			[ "$quota_mb" -gt 0 ] 2>/dev/null && ok="${ok} (Kuota: ${quota_mb}MB)" ;;
 		*) msg="$result" ;;
 	esac
 fi
