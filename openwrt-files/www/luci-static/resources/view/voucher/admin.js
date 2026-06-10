@@ -234,8 +234,8 @@ return view.extend({
 						ip: p[1],
 						mac: p[2],
 						expiry: p[3] || '0',
-						max_quota_mb: p[5] || '0',
-						used_bytes: p[6] || '0'
+						max_quota_mb: p[4] || '0',
+						used_bytes: p[5] || '0'
 					});
 				}
 			});
